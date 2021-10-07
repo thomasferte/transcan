@@ -1,0 +1,2245 @@
+---
+title: "Transcan paper"
+author: "Laura Villain, Rodolphe Thiébaut, Thomas Ferte, Boris Hejblum"
+output: 
+  bookdown::html_document2:
+    toc: yes
+    toc_float: true
+    number_sections: FALSE
+    fig_caption: TRUE
+    table_caption: TRUE
+---
+
+ 
+```{r include=FALSE}
+ knitr::opts_chunk$set(cache=TRUE)
+
+```
+ 
+
+```{r setup, include=FALSE, eval=TRUE,message=FALSE,warning=FALSE,cache=FALSE}
+
+
+library(readr)
+library(superheat)
+library(org.Hs.eg.db)
+library(knitr)
+library(readxl)
+library(survival)
+library("survminer")
+library(randomForestSRC)
+library(dearseq)
+library(limma)
+library(xlsx)
+library(GSA)
+library(verification)
+library(dynpred)
+library(pec)
+library(DESeq2)
+library(base)
+library(reshape2)
+library(ggplot2)
+library(stats)
+library(patchwork)
+library(blandr)
+library(kableExtra)
+library(dplyr)
+library(FactoMineR)
+library(scales)
+library(ggrepel)
+library(viridis)
+
+
+```
+# Transcan project
+The Glioma are the most common primary brain tumors, among them are the Lower Grade Glioma (LLG), that are characterized by a less aggressive biological behaviour. Their incidence in the European population is increasing, and they mainly occur in the younger population, with an invariable progression to a more malignant phenotype. The Transcan project aims to predict its progression based on imaging (PET-scan and MRI), but also to identify predictive signature liked to the patient risk of recurrence. There are two types of tumors identified by the PET-scan, "cold" patients, with a tumor showing little intensity in the image, and "diffuse" patients when the tumor have an uniform intensity. We are also interested in identifying the difference between those two groups at the gene level, and to link this difference to the recurrence risk. 
+
+
+# Transcan data
+A total of 163 patients with lower grade glioma were followed for this study. Among them, we have RNAseq data on 56 patients, proteomics data on 98 patients and imaging data on 158 patients. The following figure shows the flowchart of the total data with the cold and diffuse patients :
+![Flowchart of Transcan data](data/flow_chart_paper.png)
+
+```{r,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+# Uploading he data from the last database and formating the dataframe
+  
+data_total <- read_excel("data/13_Transcan_All_survival.xlsx",sheet = "All_survie")
+data_total=as.data.frame(data_total)
+data_total=data_total[,c(4,5,16,18,10,11,6,8,9,3)]
+data_total=data_total[-1,]
+data_total=data_total[!is.na(data_total[,2]),]
+data_total=data_total[!data_total[,2]=="SPOTS",]
+data_total=data_total[!data_total[,2]=="SPOT",]
+
+colnames(data_total)=c("ID","cold_diffuse","Reccurence","Time","Age","Sexe","oligo_astro","RNA","proteo","ID_proteo")
+data_total=data_total[,c(1,2,3,4,6,5,7,8,9,10)]
+for (i in 1:length(data_total[,1])){
+  
+  if (data_total[i,2]=="diffuse"){
+    data_total[i,2]="DIFFUSE"
+  }
+    if (data_total[i,2]=="cold"){
+    data_total[i,2]="COLD"
+    }
+  if (data_total[i,7]=="."){
+    data_total[i,7]=NA
+  }else{
+    
+  
+  if (data_total[i,7]=="1"){
+    data_total[i,7]="oligo"
+  }
+    if (data_total[i,7]=="0"){
+    data_total[i,7]="astro"
+  }}
+}
+
+data_total=data_total[!duplicated(data_total[,1]),]
+
+
+data_total[,6]=as.numeric(data_total[,6])
+data_total[,3]=as.numeric(data_total[,3])
+data_total[,4]=as.numeric(data_total[,4])/365
+data_total[,2]=as.factor(data_total[,2])
+data_total[,5]=as.factor(data_total[,5])
+data_total[,7]=as.factor(data_total[,7])
+data_total[,8]=as.factor(data_total[,8])
+data_total[,9]=as.factor(data_total[,9])
+
+
+
+cold_oligo=numeric(length(data_total[,1]))
+for (i in 1:length(data_total[,1])){
+  if (!is.na(data_total[i,7])){
+    
+  
+  if (data_total[i,2]=="COLD"&data_total[i,7]=="oligo"){
+    cold_oligo[i]=1
+  }
+    if (data_total[i,2]=="DIFFUSE"&data_total[i,7]=="oligo"){
+    cold_oligo[i]=2
+    }
+    if (data_total[i,2]=="COLD"&data_total[i,7]=="astro"){
+    cold_oligo[i]=3
+    }
+    if (data_total[i,2]=="DIFFUSE"&data_total[i,7]=="astro"){
+    cold_oligo[i]=4
+  }}
+}
+
+data_total=cbind(data_total,cold_oligo)
+data_total[,11]=factor(data_total[,11])
+
+```
+
+
+
+
+
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+Age=c(round(mean(data_total[data_total[,2]=="COLD"&!is.na(data_total[,6]),6]),1),round(mean(data_total[data_total[,2]=="DIFFUSE",6]),1))
+Female=c(table(data_total[data_total[,2]=="COLD",5])[1],table(data_total[data_total[,2]=="DIFFUSE",5])[1])
+Male=c(table(data_total[data_total[,2]=="COLD",5])[2],table(data_total[data_total[,2]=="DIFFUSE",5])[2])
+Event=c(table(data_total[data_total[,2]=="COLD",3])[2],table(data_total[data_total[,2]=="DIFFUSE",3])[2])
+No_event=c(table(data_total[data_total[,2]=="COLD",3])[1],table(data_total[data_total[,2]=="DIFFUSE",3])[1])
+Median_followup=c(round(summary(data_total[data_total[,2]=="COLD",4])[3],1),round(summary(data_total[data_total[,2]=="DIFFUSE",4])[3],1))
+cold_diffuse_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(cold_diffuse_table)=c("Cold (n=67)","Diffuse (n=93)")
+rownames(cold_diffuse_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+Age=c(round(mean(data_total[data_total[,7]=="oligo"&!is.na(data_total[,6])&!is.na(data_total[,7]),6]),1),round(mean(data_total[data_total[,7]=="astro"&!is.na(data_total[,6])&!is.na(data_total[,7]),6]),1))
+Female=c(table(data_total[data_total[,7]=="oligo",5])[1],table(data_total[data_total[,7]=="astro",5])[1])
+Male=c(table(data_total[data_total[,7]=="oligo",5])[2],table(data_total[data_total[,7]=="astro",5])[2])
+Event=c(table(data_total[data_total[,7]=="oligo",3])[2],table(data_total[data_total[,7]=="astro",3])[2])
+No_event=c(table(data_total[data_total[,7]=="oligo",3])[1],table(data_total[data_total[,7]=="astro",3])[1])
+Median_followup=c(round(summary(data_total[data_total[,7]=="oligo",4])[3],1),round(summary(data_total[data_total[,7]=="astro",4])[3],1))
+oligo_astro_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(oligo_astro_table)=c("oligo (n=86)","astro (n=71)")
+rownames(oligo_astro_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+
+
+```{r, echo = FALSE}
+t1=cold_diffuse_table
+t2=oligo_astro_table
+kable(t1,caption = c("Cold vs Diffuse")) %>%
+  kable_styling(full_width = FALSE, position = "float_left")
+kable(t2,caption = c("Oligodendroglioma vs Astrocytoma")) %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+
+
+
+
+
+We can look at the link between oligo/astro and cold/diffuse: 
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+Oligo_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="oligo",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="oligo",])[1])
+Astro_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="astro",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="astro",])[1])
+table_comparaison=cbind(Oligo_test,Astro_test)
+colnames(table_comparaison)=c("Oligo","Astro")
+rownames(table_comparaison)=c("Cold","Diffuse")
+
+ kable_classic(kbl(x=table_comparaison,caption = "Cold vs Diffuse and Astro vs Oligo"),full_width = F, html_font = "Cambria")
+ 
+
+
+```
+
+
+
+
+
+
+
+We can look at the link between oligo/astro and cold/diffuse: 
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+Oligo_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="oligo",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="oligo",])[1])
+Astro_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="astro",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="astro",])[1])
+table_comparaison=cbind(Oligo_test,Astro_test)
+colnames(table_comparaison)=c("Oligo","Astro")
+rownames(table_comparaison)=c("Cold","Diffuse")
+
+ kable_classic(kbl(x=table_comparaison,caption = "Cold vs Diffuse and Astro vs Oligo"),full_width = F, html_font = "Cambria")
+ 
+
+
+```
+
+A Chi2 test gives pvalue associated with the interaction: `r round(chisq.test(table_comparaison)[3]$p.value,5)`
+
+
+We can look at the Kaplan-Meier curves associated with cold/diffuse and astro/oligo: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves comparison"}
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_total)
+
+
+ p_oa_total=ggsurvplot(fit, data = data_total,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Oligodendroglioma vs Astrocytoma, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+ 
+ 
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_total)
+
+
+p_cd_total= ggsurvplot(fit, data = data_total,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Cold", "Diffuse"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Cold vs Diffuse, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_cd_total
+p_oa_total
+
+
+```
+
+None of the categories are significant. We can also perform Cox models, with an univariate test or adjusted on Age and Sex. Here are the pvalues corresponding: 
+
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=data_total)
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse,data=data_total)
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_total)
+cd_total_pval=round(c(summary(modele_base)$coefficients[1,5],summary(modele_univarie)$coefficients[5],surv_pvalue(fit,data=data_total,method="1")$pval,surv_pvalue(fit,data=data_total,method="sqrtN")$pval,surv_pvalue(fit,data=data_total,method="S1")$pval,surv_pvalue(fit,data=data_total,method="S2")$pval),3)
+
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=data_total)
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro,data=data_total)
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_total)
+oa_total_pval=round(c(summary(modele_base)$coefficients[4,5],summary(modele_univarie)$coefficients[5],surv_pvalue(fit,data=data_total,method="1")$pval,surv_pvalue(fit,data=data_total,method="sqrtN")$pval,surv_pvalue(fit,data=data_total,method="S1")$pval,surv_pvalue(fit,data=data_total,method="S2")$pval),3)
+
+
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_total)
+
+
+
+table_pvals=rbind(cd_total_pval,oa_total_pval)
+colnames(table_pvals)=c("Cox multivarié","Cox univarié","Log-rank","Tarone-Ware","Peto-Peto","Modified Peto-Peto")
+rownames(table_pvals)=c("C vs D ","O vs A ")
+
+ kable_classic(kbl(x=table_pvals,caption = "Statistical test"),full_width = F, html_font = "Cambria")
+
+
+```
+
+
+
+## Interaction between cold/diffuse and oligo/astro
+
+We saw that the cold/diffuse and oligo/astro seem to have interactions. We can explore this with Kaplan Meier curves and cox models: 
+
+
+We can be interested to look at the interaction between Astro/Oligo and Cold/Diffuse. We separated the patients into 4 categories: cold and oligo, cold and astro, diffuse and oligo, diffuse and astro. Here are the Kaplan Meier curves:
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with the 4 categories"}
+
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo, data = data_total)
+
+
+p_interaction= ggsurvplot(fit, data = data_total,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "Interaction",
+            legend.labs = c("Cold and oligo","Diffuse and oligo","Cold and astro","Diffuse and astro"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#b1c200", "#ff7905","#d70043","#7c0088"),
+            
+            title="Interactions, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_interaction
+modele_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro,data=data_total)
+modele_total_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro+Sexe+Age,data=data_total)
+modele_reduces_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_total)
+```
+
+We can see that the categories cold+oligo and diffuse+astro are stongly different. Here are the two categories represented: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with two categories"}
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo, data = data_total[data_total[,11]%in%c(1,4),])
+
+
+p_interaction_limited= ggsurvplot(fit, data = data_total[data_total[,11]%in%c(1,4),],
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "Interaction",
+            legend.labs = c("Cold and oligo","Diffuse and astro"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#b1c200", "#7c0088"),
+            
+            title="Interactions, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_interaction_limited
+
+
+```
+The log-rank test shows that the difference is significant.
+
+
+We can wonder if the difference observed is linked with an interaction with cold/diffuse and oligo/astro, or simply a cumulative effect. We can perform a cox model with interaction, but also a cox model with the four categories:
+
+```{r, message=FALSE,warning=FALSE}
+modele_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro,data=data_total)
+summary(modele_interaction)
+
+```
+
+Here with the model with interaction, there seem to be no interaction between the two categories in term of survival. 
+```{r, message=FALSE,warning=FALSE}
+modele_categorie=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_total)
+summary(modele_categorie)
+```
+
+In the model with categories, there is a significant pvalue between the categorie cold+oligo and the categorie diffuse+astro, as seen on the Kaplan Meier curves. We can also look at the same model asjusted on the Age and Sex: 
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_categorie=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~  Age+Sexe+cold_oligo,data=data_total)
+summary(modele_categorie)
+```
+
+The difference between the categories cold+oligo and diffuse+astro are still significant
+
+
+
+
+# RNAseq data 
+We have gene expression data (RNAseq) for 59 patients, 4 patients being G4. The following figure presents the boxplot of the normalized counts per patients (normalization log CPM). All data have been normalized according to the log CPM, a transformation that allows us to compare the samples, by make less important the biological variations between them. The log2 transformation means that when the counts after normalization increase of one units, the raw counts have doubled. 
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="normalized counts per patients, depending on the status"}
+
+counts=read.table("data/counts_final.txt")
+
+
+datas=data_total[data_total[,8]==1,-c(8,9,10)]
+
+# Be sure that the names are unified (avoid _18 for example)
+names=datas[,1]
+names_table_split=strsplit(as.character(names),split="_")
+names_table=numeric(length(datas[,1]))
+for (i in 1:length(names_table)){
+  names_table[i]=names_table_split[[i]][1]
+}
+datas[,1]=names_table
+datas=datas[!duplicated(datas[,1]),]
+
+#remove counts with null variance or counts
+
+counts=counts[rownames(counts)%in%datas[,1],]
+liste_vide=c()
+liste_variance_nulle=c()
+for (i in 1:length(counts[1,])){
+  if (sum(as.vector(counts[,i])==rep(0,length(counts[,1])))==length(counts[,1])){
+    liste_vide=c(liste_vide,i)
+  }
+  if (sd(counts[,i])==0){
+    liste_variance_nulle=c(liste_variance_nulle,i)
+  }
+}
+ 
+#normalization of counts
+counts=counts[,-liste_vide]
+norm_counts <- apply(counts, MARGIN = 2, function(v) {
+  log2((v + 0.5)/(sum(v) + 1) * 10^6)
+})
+norm_counts <- as.data.frame(norm_counts)
+raw_counts=counts
+counts=norm_counts
+
+rownames(datas)=datas[,1]
+datas=datas[rownames(counts),]
+
+
+
+output_cold_oligo=datas[,8]
+output_cold_oligo=as.numeric(as.character(output_cold_oligo))
+```
+
+
+## Cold versus Diffuse {.tabset .tabset-pills}
+We have gene expression data (RNAseq) for 59 patients, with 24 cold patients (2 being G4) and 35 diffuse patients (2 being G4). The following table shows the different characteristics of these patients. The previous figure shows the differences in therm of gene expression between G4 and not G4, but also Cold and Diffuse
+
+
+We performed a PCA with all counts, with a separation depending on the cold or diffuse status. The PCA was done after a VST transformation on the raw counts, followed by a scaling (centered and reduced), as all PCA were performed
+
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+Age=c(round(mean(datas[datas[,2]=="COLD"&!is.na(datas[,6]),6]),1),round(mean(datas[datas[,2]=="DIFFUSE",6]),1))
+Female=c(table(datas[datas[,2]=="COLD",5])[1],table(datas[datas[,2]=="DIFFUSE",5])[1])
+Male=c(table(datas[datas[,2]=="COLD",5])[2],table(datas[datas[,2]=="DIFFUSE",5])[2])
+Event=c(table(datas[datas[,2]=="COLD",3])[2],table(datas[datas[,2]=="DIFFUSE",3])[2])
+No_event=c(table(datas[datas[,2]=="COLD",3])[1],table(datas[datas[,2]=="DIFFUSE",3])[1])
+Median_followup=c(round(summary(datas[datas[,2]=="COLD",4])[3],1),round(summary(datas[datas[,2]=="DIFFUSE",4])[3],1))
+cold_diffuse_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(cold_diffuse_table)=c("Cold (n=24)","Diffuse (n=35)")
+rownames(cold_diffuse_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+library(kableExtra)
+# dt %>%
+#   kbl(caption = "Cold vs Diffuse patients") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+ kable_classic(kbl(x=cold_diffuse_table,caption = "Cold vs Diffuse patients"),full_width = F, html_font = "Cambria")
+
+```
+
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,results=FALSE, fig.show='hide'}
+counts_pca <- raw_counts
+counts_pca <- round((counts_pca+1),0)
+counts_pca <- vst(t(counts_pca))
+
+counts_pca_scaled <- base::scale(t(counts_pca), center=TRUE, scale=TRUE)
+
+res.pca=PCA(counts_pca_scaled , graph=FALSE)
+Cold_or_diffuse=as.factor(datas[,2])
+pca_data <- cbind.data.frame(res.pca$ind$coord[, 1:4],as.factor(datas[,2]),rownames(res.pca$ind$coord))
+colnames(pca_data)=c("Dim.1","Dim.2","Dim.3","Dim.4","Cold_diffuse","ID")
+table_coord=res.pca$ind$coord[,c(1,2)]
+
+p2 <- ggplot(pca_data, aes(x=Dim.1, y=Dim.2, colour = as.factor(datas[,2]))) +
+    scale_color_manual(values= c("#E7B800", "#2E9FDF"))+
+  theme_bw() +
+  geom_point(size=2, alpha=1) +
+  guides(color=guide_legend(override.aes = list(alpha=1),title="Cold or Diffuse")) +
+  xlab(label=paste0("PC1 (", round(res.pca$eig[1,2], 2),"% of total variance explained)")) +
+  ylab(label=paste0("PC2 (", round(res.pca$eig[2,2], 2), "% of total variance explained)")) +
+  ggtitle("", subtitle = "First factorial plan, RNA data")
+
+pca_data <- cbind.data.frame(res.pca$ind$coord[, 1:4],as.factor(output_cold_oligo),rownames(res.pca$ind$coord))
+colnames(pca_data)=c("Dim.1","Dim.2","Dim.3","Dim.4","Cold_oligo","ID")
+
+
+
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE, fig.cap="PCA of the RNA data, with G4 patients (vst transformation and scaled data)"}
+p2
+```
+
+
+We will then look gene per gene if there is a difference between cold and diffuse. For that, we use the dearseq package.
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+# Computation of the dearseq results
+output=ifelse(datas[,2]=="COLD",0,1)
+Y=matrix(output,ncol=1,nrow=length(output))
+
+scores=dear_seq(exprmat=t(as.matrix(raw_counts)),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+
+
+genewise_dearseq_cold=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_cold[,1]=as.character(genewise_dearseq_cold[,1])
+genewise_dearseq_cold[,2]=as.numeric(as.character(genewise_dearseq_cold[,2]))
+genewise_dearseq_cold[,3]=as.numeric(as.character(genewise_dearseq_cold[,3]))
+genewise_dearseq_cold[,4]=as.numeric(as.character(genewise_dearseq_cold[,4]))
+genewise_dearseq_cold=genewise_dearseq_cold[order(genewise_dearseq_cold[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_cold)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+
+#Fold change for those identified with norm counts (log2foldchange)
+
+patients_cold=counts[output==0,]
+patients_diffuse=counts[output==1,]
+means_diffuse=numeric(length(patients_cold[1,]))
+means_cold=numeric(length(patients_cold[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_diffuse[i]=mean(patients_diffuse[,i])
+  means_cold[i]=mean(patients_cold[,i])
+}
+
+fold_change=data.frame(colnames(patients_cold),means_diffuse-means_cold)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_cold=merge(genewise_dearseq_cold,fold_change,by="ID")
+total_cold=total_cold[order(total_cold[,4],total_cold[,5]),]
+
+#write.xlsx(total_cold[total_cold[,2]<0.05,], file = "dearseq_RNA_C_D_wg4.xlsx",col.names = TRUE,row.names = FALSE)
+
+
+# Construction of a vulcano plot with highlight on those with |foldchange|>0.6
+
+total_cold$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+total_cold$diffexpressed[total_cold$log2FoldChange > 0.6 & total_cold$pvalue < 0.05] <- "UP"
+# if log2Foldchange <  (-0.6) and pvalue < 0.05, set as "DOWN"
+total_cold$diffexpressed[total_cold$log2FoldChange <  (-0.6) & total_cold$pvalue < 0.05] <- "DOWN"
+
+total_cold$delabel <- NA
+total_cold$delabel[total_cold$diffexpressed != "NO"] <- total_cold$ID[total_cold$diffexpressed != "NO"]
+
+total_cold_RNA=total_cold
+plot1=ggplot(data=total_cold, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+  geom_text_repel()  + scale_color_manual(values= c( "#e7b800","#abadac", "#2E9FDF")
+) +ggtitle("Log2 Fold change in function of pvalues, RNA data")
+
+plot2=ggplot(data=total_cold,aes(x=log2FoldChange))+geom_density()+xlim(c(-2,2))+ theme_minimal()+ggtitle("Distribution of Log2FoldChange") 
+
+```
+
+
+
+
+
+dearseq identifies `r dim(genewise_dearseq_cold[genewise_dearseq_cold[,2]<0.05,])[1]` genes that are differentially expressed between cold and diffuse. Here are the first genes in term of p-value:
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+#order the data with pvalues and fold change
+total_cold_RNA=total_cold[order(total_cold[,4],1/abs(total_cold[,5])),]
+rownames(total_cold_RNA)=NULL
+
+ kable_classic(kbl(x=total_cold_RNA[1:10,c(1,2,3,4,5)],caption = "Cold vs Diffuse genes"),full_width = F, html_font = "Cambria")
+
+```
+
+We can look at the vulcano plot and also the distribution of the log2 Fold change, in the following figure. The vulcano plot shows the log10(pvalue) in function of the log2 Fold change, which allows to see if the significant genes are up regulated or down regulated (cold as base). A positive log2 Fold change indicates that the gene is, on average, more expressed among the diffuse patients, while a negative log2 Fold change indicates that the gene is more expressed among the cold patients. 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,fig.cap="Vulcano plot and distribution of log2 Fold change",cache=FALSE}
+plot1
+plot2
+```
+
+We can observe the brier score associated with these genes. The brier score is an indicator of the prediction aibility, between 1 and 0, 0 being a perfect predictor and 1 a poor predictor: 
+
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+
+Y <- output
+X <- counts[,colnames(counts)%in%genewise_dearseq_cold[genewise_dearseq_cold[,2]<0.05,1]]
+temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+for (i in 1:dim(X)[1]){ # leave one out
+  for (j in 1:dim(X)[2]){
+    fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+    prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+    temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+  }
+}
+
+BS <- NULL
+for (k in 1:dim(X)[2]){ # gene k
+  BS[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+}
+BS=cbind(colnames(X),BS)
+colnames(BS)=c("ID","BS_v2")
+dearseq_brier=merge(genewise_dearseq_cold,BS,by="ID")
+dearseq_brier=cbind(dearseq_brier,rank(dearseq_brier[,5]))
+dearseq_brier=as.data.frame(dearseq_brier)
+colnames(dearseq_brier)=c("ID","pvalue","rank_pvalue","raw_pvalue","BS","rank_BS")
+dearseq_brier_RNA=dearseq_brier
+```
+```{r,echo=F,eval=T,message=FALSE,warning=FALSE,cache=FALSE, fig.cap="Brier score for the genes identified by dearseq for the cold vs diffuse status (with G4)"}
+BS_dearseq_cold=as.numeric(as.character(dearseq_brier[,5]))
+df <- data.frame(Brier.score = BS_dearseq_cold,
+                 rank=rank(BS_dearseq_cold,ties.method = "random"),
+                 method=as.factor(rep("dearseq_asym",length(BS_dearseq_cold))))
+
+g_dearseq_cold <- ggplot(df[df[,3]=="dearseq_asym",], aes(x=rank, y=Brier.score)) +
+  theme_minimal() +  geom_point(size=1.5,alpha=0.6,color="#FF9900") +
+  theme(axis.title = element_text(size=16), axis.text = element_text(size=12), legend.title = element_text(size=16), legend.text = element_text(size=14)) +
+  geom_rug(alpha=0.5,color="#FF9900")  + 
+  ylab("Brier Score")+ggtitle("Brier score of DEG for Cold vs Diffuse")
+g_dearseq_cold
+```
+
+
+## Astro vs Oligo
+We also have the Astro or Oligo status of the patients, with a total of 24 Astro patients (4 being G4) and 35 Oligo patients. The following table presents the different characteristics: 
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+Age=c(round(mean(datas[datas[,7]=="oligo"&!is.na(datas[,6]),6]),1),round(mean(datas[datas[,7]=="astro"&!is.na(datas[,6]),6]),1))
+Female=c(table(datas[datas[,7]=="oligo",5])[1],table(datas[datas[,7]=="astro",5])[1])
+Male=c(table(datas[datas[,7]=="oligo",5])[2],table(datas[datas[,7]=="astro",5])[2])
+Event=c(table(datas[datas[,7]=="oligo",3])[2],table(datas[datas[,7]=="astro",3])[2])
+No_event=c(table(datas[datas[,7]=="oligo",3])[1],table(datas[datas[,7]=="astro",3])[1])
+Median_followup=c(round(summary(datas[datas[,7]=="oligo",4])[3],1),round(summary(datas[datas[,7]=="astro",4])[3],1))
+oligo_astro_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(oligo_astro_table)=c("oligo (n=35)","astro (n=24)")
+rownames(oligo_astro_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+library(kableExtra)
+
+ kable_classic(kbl(x=oligo_astro_table,caption = "Oligo vs Astro patients"),full_width = F, html_font = "Cambria")
+
+```
+The same PCA analysis can be done, this time by highlighting the oligo vs astro status : 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,results=FALSE, fig.show='hide'}
+counts_pca <- raw_counts
+counts_pca <- round((counts_pca+1),0)
+counts_pca <- vst(t(counts_pca))
+
+counts_pca_scaled <- base::scale(t(counts_pca), center=TRUE, scale=TRUE)
+
+res.pca=PCA(counts_pca_scaled , graph=FALSE)
+#plot.PCA(res.pca, axes=c(1, 2), choix="ind")
+Astro_oligo=as.factor(datas[,7])
+pca_data <- cbind.data.frame(res.pca$ind$coord[, 1:4],as.factor(datas[,7]),rownames(res.pca$ind$coord))
+colnames(pca_data)=c("Dim.1","Dim.2","Dim.3","Dim.4","Astro_oligo","ID")
+table_coord=res.pca$ind$coord[,c(1,2)]
+
+p2 <- ggplot(pca_data, aes(x=Dim.1, y=Dim.2, colour = as.factor(datas[,7]),label=ID)) +
+  theme_bw() +
+  geom_point(size=2, alpha=1) +  guides(color=guide_legend(override.aes = list(alpha=1),title="Oligodendroglioma \n vs Astrocytoma")) +
+  xlab(label=paste0("PC1 (", round(res.pca$eig[1,2], 2),"% of total variance explained)")) +
+  ylab(label=paste0("PC2 (", round(res.pca$eig[2,2], 2), "% of total variance explained)")) +
+  ggtitle("", subtitle = "First factorial plan, RNA data")
+
+```
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE, fig.cap="PCA of the RNA data, with G4 patients (vst transformation and scaled data)"}
+
+p2
+```
+
+We will then look gene per gene if there is a difference between oligo and astro. For that, we use dearseq.
+
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+output_oligo=ifelse(datas[,7]=="oligo",0,1)
+Y=matrix(output_oligo,ncol=1,nrow=length(output_oligo))
+
+scores=dear_seq(exprmat=t(as.matrix(raw_counts)),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+
+
+genewise_dearseq_astro=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_astro[,1]=as.character(genewise_dearseq_astro[,1])
+genewise_dearseq_astro[,2]=as.numeric(as.character(genewise_dearseq_astro[,2]))
+genewise_dearseq_astro[,3]=as.numeric(as.character(genewise_dearseq_astro[,3]))
+genewise_dearseq_astro[,4]=as.numeric(as.character(genewise_dearseq_astro[,4]))
+genewise_dearseq_astro=genewise_dearseq_astro[order(genewise_dearseq_astro[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_astro)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+
+
+
+patients_oligo=counts[output_oligo==0,]
+patients_astro=counts[output_oligo==1,]
+means_oligo=numeric(length(patients_oligo[1,]))
+means_astro=numeric(length(patients_astro[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_oligo[i]=mean(patients_oligo[,i])
+  means_astro[i]=mean(patients_astro[,i])
+}
+
+fold_change=data.frame(colnames(patients_astro),means_oligo-means_astro)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_astro=merge(genewise_dearseq_astro,fold_change,by="ID")
+total_astro=total_astro[order(total_astro[,4],total_astro[,5]),]
+
+write.xlsx(total_astro[total_astro[,2]<0.05,], file = "dearseq_RNA_O_A_wg4.xlsx",col.names = TRUE,row.names=FALSE)
+
+
+total_astro$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+total_astro$diffexpressed[total_astro$log2FoldChange > 0.6 & total_astro$pvalue < 0.05] <- "UP"
+# if log2Foldchange <  (-0.6) and pvalue < 0.05, set as "DOWN"
+total_astro$diffexpressed[total_astro$log2FoldChange <  (-0.6) & total_astro$pvalue < 0.05] <- "DOWN"
+
+total_astro$delabel <- NA
+total_astro$delabel[total_astro$diffexpressed != "NO"] <- total_astro$ID[total_astro$diffexpressed != "NO"]
+
+
+plot1=ggplot(data=total_astro, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+  geom_text_repel()  + scale_color_manual(values=  c( "#F8766D","#abadac", "#00bfc4")) +ggtitle("Log2 Fold change in function of pvalues, RNA data")
+
+plot2=ggplot(data=total_astro,aes(x=log2FoldChange))+geom_density()+xlim(c(-2,2))+ theme_minimal()+ggtitle("Distribution of Log2FoldChange") 
+total_astro_RNA=total_astro
+
+
+```
+To identify which genes are differentialy expressed between the oligo and astro groups, we perform dearseq, which finds `r dim(genewise_dearseq_astro[genewise_dearseq_astro[,2]<0.05,])[1]` genes. Here are the first genes in term of p-value:
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+total_astro=total_astro[order(total_astro[,4],1/abs(total_astro[,5])),]
+rownames(total_astro)=NULL
+ kable_classic(kbl(x=total_astro[1:10,c(1,2,3,4,5)],caption = "Oligo vs Astro genes"),full_width = F, html_font = "Cambria")
+
+
+```
+
+
+
+We can look at the vulcano plot and also the distribution of the log2 Fold change, in the following figure. The vulcano plot shows the log10(pvalue) in function of the log2 Fold change, which allows to see if the significant genes are up regulated or down regulated (astro as base). A positive log2 Fold change indicates that the gene is, on average, more expressed among the oligo patients, while a negative log2 Fold change indicates that the gene is more expressed among the astro patients. 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,fig.cap="Vulcano plot and distribution of log2 Fold change",cache=FALSE}
+plot1
+plot2
+```
+
+We can observe the brier score associated with these genes. The brier score is an indicator of the prediction ability, between 1 and 0, 0 being a perfect predictor and 1 a poor predictor: 
+```{r,eval=T,echo=F, message=FALSE,warning=FALSE,cache=TRUE}
+
+Y <- output_oligo
+X <- counts[,colnames(counts)%in%genewise_dearseq_astro[genewise_dearseq_astro[,2]<0.05,1]]
+temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+for (i in 1:dim(X)[1]){ # leave one out
+  for (j in 1:dim(X)[2]){
+    fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+    prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+    temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+  }
+}
+
+BS <- NULL
+for (k in 1:dim(X)[2]){ # gene k
+  BS[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+}
+BS=cbind(colnames(X),BS)
+colnames(BS)=c("ID","BS_v2")
+dearseq_brier=merge(genewise_dearseq_astro,BS,by="ID")
+dearseq_brier=cbind(dearseq_brier,rank(dearseq_brier[,5]))
+dearseq_brier=as.data.frame(dearseq_brier)
+colnames(dearseq_brier)=c("ID","pvalue","rank_pvalue","raw_pvalue","BS","rank_BS")
+```
+```{r, message=FALSE,warning=FALSE,echo=FALSE,cache=FALSE, fig.cap="Brier score for the genes identified by dearseq for the astro vs oligo status"}
+BS_dearseq_astro=as.numeric(as.character(dearseq_brier[,5]))
+df <- data.frame(Brier.score = BS_dearseq_astro,
+                 rank=rank(BS_dearseq_astro,ties.method = "random"),
+                 method=as.factor(rep("dearseq_asym",length(BS_dearseq_astro))))
+
+g_dearseq_astro <- ggplot(df[df[,3]=="dearseq_asym",], aes(x=rank, y=Brier.score)) +
+  theme_minimal() +
+  # scale_color_manual( values = c("#CCCCCC", grDevices::heat.colors(n=2)[3])) +
+  geom_point(size=1.5,alpha=0.6,color="#FF9900") +
+  theme(axis.title = element_text(size=16), axis.text = element_text(size=12), legend.title = element_text(size=16), legend.text = element_text(size=14)) +
+  #  guides(color = guide_legend(override.aes = list(alpha=1))) +
+  geom_rug(alpha=0.5,color="#FF9900")  + 
+  ylab("Brier Score")+ggtitle("Brier score of DEG for Astrocytoma vs Oligodendoglioma")
+g_dearseq_astro
+```
+
+## Interaction between cold/diffuse and oligo/astro
+
+dearseq identified 1212 genes differentially expressed between cold and diffuse, and 117 differentially expressed betwen oligodendroglioma and astrocytoma. Among those genes, 80 were in common. We can observe the link in term of fold change for these genes 
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_OA=read.xlsx("dearseq_RNA_O_A_wg4.xlsx",sheetIndex  =1)
+genes_CD=read.xlsx("dearseq_RNA_C_D_wg4.xlsx",sheetIndex  =1)
+comparaison=merge(genes_OA,genes_CD,by="ID")
+data_compare=comparaison[,c(5,9)]
+data_compare=data_compare[order(data_compare[,1]),]
+colnames(data_compare)=c("log2Foldchange_OA","log2Foldchange_CD")
+ggplot(data = data_compare,aes(x=log2Foldchange_CD,y=log2Foldchange_OA))+geom_point()+ggtitle("Comparison of fold changes between cold/diffuse \n and oligodendroglioma/astrocytoma")+geom_abline(slope=1)
+```
+
+
+
+
+
+
+
+As we can seen, the fold changes of the genes are extremely similar, but we took diffuse and oligo as references (if the fold change is positive then it is more expressed for the diffuse patients, or oligo patients for the AO fold change). However, as most of the patients being diffuse are also oligo, it seems normal to have correlated fold changes, as the patients in the two categories are similar.
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_comparison=counts[,colnames(counts)%in%c(comparaison[,1])]
+output_cold_oligoB=output_cold_oligo
+for (i in 1:length(output_cold_oligo)){
+  if (output_cold_oligo[i]==1){
+    output_cold_oligoB[i]="cold_oligo"
+  }
+    if (output_cold_oligo[i]==2){
+    output_cold_oligoB[i]="diffuse_oligo"
+    }
+    if (output_cold_oligo[i]==3){
+    output_cold_oligoB[i]="cold_astro"
+    }
+    if (output_cold_oligo[i]==4){
+    output_cold_oligoB[i]="diffuse_astro"
+  }
+}
+output_cold_oligoB=factor(output_cold_oligoB,levels=c("cold_oligo","cold_astro","diffuse_oligo","diffuse_astro"))
+superheat(genes_comparison,membership.rows =output_cold_oligoB,bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3,bottom.label.size = 0.4,left.label.text.size = 4)
+```
+
+
+
+
+We saw that the cold/diffuse and oligo/astro seem to have interactions. We can identify genes that are differentially expressed between the group cold+oligo and diffuse+astro by using dearseq.
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+output_test=output_cold_oligo[output_cold_oligo%in%c(1,4)]
+output_test=ifelse(output_test==1,0,1)
+Y=matrix(output_test,ncol=1,nrow=length(output_test))
+raw_counts_test=raw_counts[output_cold_oligo%in%c(1,4),]
+norm_counts_test=norm_counts[output_cold_oligo%in%c(1,4),]
+
+scores=dear_seq(exprmat=t(as.matrix(raw_counts_test)),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+genewise_dearseq_cold_oligo=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_cold_oligo[,1]=as.character(genewise_dearseq_cold_oligo[,1])
+genewise_dearseq_cold_oligo[,2]=as.numeric(as.character(genewise_dearseq_cold_oligo[,2]))
+genewise_dearseq_cold_oligo[,3]=as.numeric(as.character(genewise_dearseq_cold_oligo[,3]))
+genewise_dearseq_cold_oligo[,4]=as.numeric(as.character(genewise_dearseq_cold_oligo[,4]))
+genewise_dearseq_cold_oligo=genewise_dearseq_cold_oligo[order(genewise_dearseq_cold_oligo[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_cold_oligo)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+dearseq_cold_oligo_DE=genewise_dearseq_cold_oligo[genewise_dearseq_cold_oligo[,2]<0.05,]
+genes_DE=genewise_dearseq_cold_oligo[genewise_dearseq_cold_oligo[,2]<0.05,1]
+pvalues_DE=numeric(length(genes_DE))
+for (i in 1:length(genes_DE)){
+  model=coxph(Surv(time=as.numeric(Time),event=as.numeric(Reccurence))~counts[,colnames(counts)==genes_DE[i]],data=datas)
+  pvalues_DE[i]=summary(model)$coefficients[5]
+}
+
+
+patients_CO=norm_counts_test[output_test==0,]
+patients_DA=norm_counts_test[output_test==1,]
+means_CO=numeric(length(patients_CO[1,]))
+means_DA=numeric(length(patients_DA[1,]))
+for (i in 1:length(patients_CO[1,])){
+  means_CO[i]=mean(patients_CO[,i])
+  means_DA[i]=mean(patients_DA[,i])
+}
+
+fold_change=data.frame(colnames(patients_DA),means_CO-means_DA)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_cold_oligo=merge(genewise_dearseq_cold_oligo,fold_change,by="ID")
+total_cold_oligo=total_cold_oligo[order(total_cold_oligo[,4],total_cold_oligo[,5]),]
+
+#write.table(dearseq_cold_oligo_DE,"RNA_Cold_oligo.txt",col.names = TRUE,row.names = FALSE)
+
+
+
+# Construction of a vulcano plot with highlight on those with |foldchange|>0.6
+
+total_cold_oligo$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+total_cold_oligo$diffexpressed[total_cold_oligo$log2FoldChange > 0.6 & total_cold_oligo$pvalue < 0.05] <- "UP"
+# if log2Foldchange <  (-0.6) and pvalue < 0.05, set as "DOWN"
+total_cold_oligo$diffexpressed[total_cold_oligo$log2FoldChange <  (-0.6) & total_cold_oligo$pvalue < 0.05] <- "DOWN"
+
+total_cold_oligo$delabel <- NA
+total_cold_oligo$delabel[total_cold_oligo$diffexpressed != "NO"] <- total_cold_oligo$ID[total_cold_oligo$diffexpressed != "NO"]
+
+total_cold_oligo_RNA=total_cold_oligo
+plot1=ggplot(data=total_cold_oligo, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+  geom_text_repel()  + scale_color_manual(values= c(  "#7c0088","#abadac","#b1c200")
+) +ggtitle("Log2 Fold change in function of pvalues, RNA data")
+
+plot2=ggplot(data=total_cold_oligo,aes(x=log2FoldChange))+geom_density()+xlim(c(-2,2))+ theme_minimal()+ggtitle("Distribution of Log2FoldChange") 
+
+
+
+
+```
+
+dearseq identifies 57 genes to be differentially expressed. We can look at the fold change between the two categories
+
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_OC=dearseq_cold_oligo_DE
+counts_genes=counts[,colnames(counts)%in%genes_OC[,1]]
+
+output=ifelse(datas[,2]=="COLD",0,1)
+patients_cold=counts[output==0,]
+patients_diffuse=counts[output==1,]
+means_diffuse=numeric(length(patients_cold[1,]))
+means_cold=numeric(length(patients_cold[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_diffuse[i]=mean(patients_diffuse[,i])
+  means_cold[i]=mean(patients_cold[,i])
+}
+
+fold_change=data.frame(colnames(patients_cold),means_diffuse-means_cold)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_cold_OC=merge(genes_OC,fold_change,by="ID")
+
+output_oligo=ifelse(datas[,7]=="oligo",0,1)
+patients_oligo=counts[output_oligo==0,]
+patients_astro=counts[output_oligo==1,]
+means_oligo=numeric(length(patients_oligo[1,]))
+means_astro=numeric(length(patients_astro[1,]))
+for (i in 1:length(patients_oligo[1,])){
+  means_oligo[i]=mean(patients_oligo[,i])
+  means_astro[i]=mean(patients_astro[,i])
+}
+
+fold_change=data.frame(colnames(patients_astro),means_oligo-means_astro)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_astro_OC=merge(genes_OC,fold_change,by="ID")
+
+comparaison=merge(total_cold_OC,total_astro_OC,by="ID")
+data_compare=comparaison[,c(5,9)]
+data_compare=data_compare[order(data_compare[,1]),]
+colnames(data_compare)=c("log2Foldchange_OA","log2Foldchange_CD")
+ggplot(data = data_compare,aes(x=log2Foldchange_CD,y=log2Foldchange_OA))+geom_point()+ggtitle("Comparison of fold changes between cold/diffuse \n and oligodendroglioma/astrocytoma")+geom_abline(slope=1)
+```
+
+
+
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_comparison=counts[,colnames(counts)%in%c(comparaison[,1])]
+superheat(genes_comparison,membership.rows =output_cold_oligoB,bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3,bottom.label.size = 0.4,left.label.text.size = 4)
+```
+
+
+
+
+
+
+## Survival analysis {.tabset .tabset-pills}
+When can first perform a simple survival analysis by using a cox model on the base covariates: 
+
+```{r, message=FALSE,warning=FALSE}
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=datas)
+summary(modele_base)
+
+```
+The p-value not significant for any variables, and the AIC of the model is `r extractAIC(modele_base)[2]`.
+
+
+As the random forest are, random, the results can change from one time to another. We computed multiple times (10) the random forest and looked at the genes that were similar from one iteration to the other. We can explore if the genes identified by the random forest are also linked with the recurrence risk. For that, we compute three indicators for each gene identify by the random forest: the dearseq pvalue, the fold change (cold as base, on log CPM), and the brier score, linked with the cold vs diffuse. 
+
+```{r,echo=F,message=FALSE,warning=FALSE,cache=TRUE}
+results_tot=read.table("data/results_rf.txt")
+liste_selected=as.list(NULL)
+plots=as.list(NULL)
+plots_selected=as.list(NULL)
+results=results_tot[results_tot[,3]==1,]
+results=results[!duplicated(results[,1]),]
+results=results[,c(1,2)]
+colnames(results)=c("ID","importance")
+liste_merged=results
+for (i in 2:10){
+  results=results_tot[results_tot[,3]==i,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  liste_merged=merge(liste_merged,results,by="ID")
+}
+liste_merged_tot=liste_merged
+liste_merged=liste_merged[,1]
+
+for (test in 1:10){
+  results=results_tot[results_tot[,3]==test,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  dearseq=genewise_dearseq_cold
+  results_rf=merge(results,dearseq)
+  results_rf=results_rf[,c(1,2,3,5)]
+  patients_cold=norm_counts[output==0,colnames(counts)%in%results_rf[,1]]
+  patients_diffuse=norm_counts[output==1,colnames(counts)%in%results_rf[,1]]
+  means_diffuse=numeric(length(patients_cold[1,]))
+  means_cold=numeric(length(patients_cold[1,]))
+  for (i in 1:length(patients_cold[1,])){
+    means_diffuse[i]=mean(patients_diffuse[,i])
+    means_cold[i]=mean(patients_cold[,i])
+  }
+  fold_change=means_diffuse-means_cold
+  results_rf=cbind(results_rf,fold_change)
+  results_rf[,2]=round(as.numeric(results_rf[,2]),digits = 5)
+  summary(results_rf[,3])
+  #### BRIER SCORE : capacitÃ© predictive d'un gÃ¨ne
+  # proche de 0 => bon predicteur
+  # proche de 1 => mauvais predicteur
+  Y <- output
+  X <- counts[,colnames(counts)%in%results_rf[,1]]
+  temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+  for (i in 1:dim(X)[1]){ # leave one out
+    for (j in 1:dim(X)[2]){
+      fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+      prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+      temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+    }
+  }
+  BS <- NULL
+  for (k in 1:dim(X)[2]){ # gene k
+    BS[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+  }
+  BS=cbind(colnames(X),BS)
+  colnames(BS)=c("ID","BS_v2")
+  
+    Y <- output_oligo
+  X <- counts[,colnames(counts)%in%results_rf[,1]]
+  temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+  for (i in 1:dim(X)[1]){ # leave one out
+    for (j in 1:dim(X)[2]){
+      fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+      prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+      temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+    }
+  }
+  BS_astro <- NULL
+  for (k in 1:dim(X)[2]){ # gene k
+    BS_astro[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+  }
+  BS_astro=cbind(colnames(X),BS_astro)
+  colnames(BS_astro)=c("ID","BS_v2")
+  
+  
+  results_rf=cbind(results_rf,as.numeric(BS[,2]))
+  results_rf=results_rf[order(results_rf[,2],decreasing=TRUE),]
+  results_rf=results_rf[!is.na(results_rf[,1]),]
+  colnames(results_rf)=c("ID","importance","dearseq","dearseq_raw","fold_change","BS")
+  datas_total=melt(results_rf,id.var="ID")
+  datas_total[,1]=factor(datas_total[,1],levels=c(datas_total[1:dim(results_rf)[1],1]))
+  liste=results_rf[results_rf[,3]<0.05|results_rf[,5]>0.6|results_rf[,5]<(-0.6),1]
+  liste_selected[[test]]=liste
+  color=numeric(length(datas_total[,1]))
+  #color=ifelse(datas_total[,1]%in%liste,"red","black")
+  color=ifelse(datas_total[,1]%in%liste_merged,"blue","black")
+  datas_highlight=as.data.frame(cbind(datas_total,color))
+  plots[[test]]=ggplot(datas_highlight[datas_highlight[,2]!="dearseq",],aes(x=ID,y=value))+
+    geom_point(color=color[datas_highlight[,2]!="dearseq"])+
+    facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected genes with survival random forest")+ theme(axis.text.x = element_blank())
+ 
+  
+  liste=results_rf[results_rf[,3]<0.05|results_rf[,5]>0.6|results_rf[,5]<(-0.6),1]
+  color=numeric(length(datas_total[,1]))
+  color=ifelse(datas_total[,1]%in%liste,"red","black")
+  datas_highlight=as.data.frame(cbind(datas_total,color))
+  plots_selected[[test]]=ggplot(datas_highlight[datas_highlight[,2]!="dearseq",],aes(x=ID,y=value))+
+    geom_point(color=color[datas_highlight[,2]!="dearseq"])+
+    facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected genes with survival random forest")+ theme(axis.text.x = element_blank())
+  
+  
+  }
+plot1=(plots[[1]]+plots[[2]])/(plots[[3]]+plots[[4]])
+plot2=(plots_selected[[1]]+plots_selected[[2]])/(plots_selected[[3]]+plots_selected[[4]])
+```
+
+We can first see which genes are always found as important genes (here in blue)
+```{r,echo=F,message=FALSE,warning=FALSE,cache=FALSE,fig.cap="Repetition of the random forest, with the genes always found (in blue)"}
+plot1=(plots[[1]]+plots[[2]])/(plots[[3]]+plots[[4]])
+
+plot1
+```
+
+Here is a table that show with genes that are always identified and their mean importance, followed by a graph showing how often a gene is identified among all tries
+```{r,echo=F,message=FALSE,warning=FALSE,fig.cap="How often each gene is found in the total repetitions"}
+means_tot=numeric(length(liste_merged_tot[,1]))
+for (i in 1:length(liste_merged_tot[,1])){
+  means_tot[i]=mean(as.numeric(liste_merged_tot[i,-1]))
+}
+liste_found=as.data.frame(cbind(liste_merged_tot[,1],means_tot))
+colnames(liste_found)=c("gene","mean importance")
+kable_classic(kbl(x=liste_found,caption = "Genes always found and their mean importance"),full_width = F, html_font = "Cambria")
+
+
+results=results_tot[results_tot[,3]==1,]
+results=results[!duplicated(results[,1]),]
+results=results[,c(1,2)]
+colnames(results)=c("ID","importance")
+liste_merged2=results
+for (i in 2:10){
+  results=results_tot[results_tot[,3]==i,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  liste_merged2=merge(liste_merged2,results,all=TRUE)
+}
+
+variables=unique(liste_merged2[,1])
+percent=numeric(length(variables))
+mean_imp=numeric(length(variables))
+for (i in 1:length(variables)){
+  results_variable=liste_merged2[liste_merged2[,1]==variables[i],]
+  percent[i]=100*round(dim(results_variable)[1]/10,2)
+  mean_imp[i]=mean(results_variable[,2])
+}
+
+table_tot=as.data.frame(cbind(variables,percent,round(mean_imp,6)))
+
+colnames(table_tot)=c("ID","percent","importance")
+table_tot=merge(table_tot,total_cold,by="ID")
+table_tot=table_tot[,c(1,2,3,4,7,8)]
+table_tot=merge(table_tot,total_astro,by="ID")
+table_tot=table_tot[,c(1,2,3,4,5,6,7,10,11)]
+colnames(table_tot)=c("ID","percent","RF_importance","dearseq_cold_diffuse","Log2FC_cold_diffuse","diff_expr_cold_diffuse","dearseq_astro_oligo","Log2FC_astro_oligo","diff_expr_astro_oligo")
+table_tot[,2]=as.numeric(table_tot[,2])
+ 
+table_tot=table_tot[order(table_tot[,2],table_tot[,3],decreasing = TRUE),]
+
+write.xlsx(table_tot,"survival_total_RNA.xlsx",row.names = FALSE,col.names = TRUE)
+table_tot_RNA=table_tot
+
+table_nombres=table(liste_merged2[,1])
+table_nombres=as.data.frame(cbind(rep(1,length(table_nombres)),table_nombres))
+colnames(table_nombres)=c("number of identifications","occurences")
+ggplot(as.data.frame(table_nombres),aes(x=occurences)) + 
+  geom_histogram()
+```
+
+
+But can also see which genes are identified as linked with cold/diffuse status (here in red)
+```{r,echo=F,message=FALSE,warning=FALSE,fig.cap="Repetition of the random forest, with the genes identified as linked with cold and diffuse status (in red)"}
+plot2
+```
+
+## Genes of interest{ .tabset .tabset-pills}
+The gene SLC17A8 was always found as most important gene with the G4 patients, and also had a link with cold and diffuse status, we can explore more the gene. Moreover, we can look and the genes that are always found, as presented in the following table: 
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+kable_classic(kbl(x=table_tot[table_tot[,2]==100,],caption = "Genes always found with random forest"),full_width = F, html_font = "Cambria")
+
+total_rf_CD=table_tot[table_tot[,2]==100,c(1,3,4,5)]
+total_rf_CD=merge(total_rf_CD,BS,by="ID")
+total_rf_CD=total_rf_CD[order(total_rf_CD[,2],decreasing=TRUE),]
+colnames(total_rf_CD)=c("ID","Mean importance","dearseq p-value","log2 fold_change","Brier score")
+datas_total=melt(total_rf_CD,id.var="ID") 
+
+liste=table_tot[table_tot[,4]<0.05|table_tot[,5]>0.6|table_tot[,5]< (-0.6),1]
+color=numeric(length(datas_total[,1]))
+color=ifelse(datas_total[,1]%in%liste,"red","black")
+datas_highlight_CD=as.data.frame(cbind(datas_total,color))
+datas_highlight_CD[,1]=factor(datas_highlight_CD[,1],levels=c(datas_highlight_CD[1:dim(total_rf_CD)[1],1]))
+datas_highlight_CD[,3]=as.numeric(datas_highlight_CD[,3])
+
+ggplot(datas_highlight_CD,aes(x=ID,y=value))+
+  geom_point(color=color)+
+  facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected genes with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main genes in survival and link with Cold vs Diffuse")
+
+
+total_rf_AO=table_tot[table_tot[,2]==100,c(1,3,7,8)]
+total_rf_AO=merge(total_rf_AO,BS_astro,by="ID")
+total_rf_AO=total_rf_AO[order(total_rf_AO[,2],decreasing=TRUE),]
+
+colnames(total_rf_AO)=c("ID","Mean importance","dearseq p-value","log2 fold_change","Brier score")
+datas_total=melt(total_rf_AO,id.var="ID") 
+
+liste=table_tot[table_tot[,7]<0.05|table_tot[,8]>0.6|table_tot[,8]< (-0.6),1]
+color=numeric(length(datas_total[,1]))
+color=ifelse(datas_total[,1]%in%liste,"blue","black")
+datas_highlight_AO=as.data.frame(cbind(datas_total,color))
+datas_highlight_AO[,1]=factor(datas_highlight_AO[,1],levels=c(datas_highlight_AO[1:dim(total_rf_AO)[1],1]))
+datas_highlight_AO[,3]=as.numeric(datas_highlight_AO[,3])
+
+ggplot(datas_highlight_AO,aes(x=ID,y=value))+
+  geom_point(color=color)+
+  facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected genes with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main genes in survival and link \n with Oligodendroglioma vs Astrocytoma")
+
+Type=c(rep("Mean importance",length(datas_highlight_CD[datas_highlight_CD[,2]=="Mean importance",1])),rep("Cold vs Diffuse",length(datas_highlight_CD[datas_highlight_CD[,2]!="Mean importance",1])))
+datas_highlight_CD=cbind(datas_highlight_CD,Type)
+Type=rep("Oligodendroglioma \n vs Astrocytoma",length(datas_highlight_AO))
+datas_highlight_AO=cbind(datas_highlight_AO,Type)
+datas_tot_survival=rbind(datas_highlight_CD,datas_highlight_AO[datas_highlight_AO[,2]!="Mean importance",])
+datas_tot_survival[,5]= factor(datas_tot_survival[,5], levels = c("Mean importance", "Cold vs Diffuse", "Oligodendroglioma \n vs Astrocytoma"))
+
+ggplot(datas_tot_survival,aes(x=ID,y=value,shape=Type,colour=color))+
+geom_point()+
+facet_grid(variable~.,scale="free") + xlab("selected genes with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main genes in survival and link with \n Cold vs Diffuse or with \n Oligodendroglioma vs Astrocytoma")+ guides(color = FALSE)+scale_colour_manual(values=c("black","blue","red"))
+
+
+
+
+```
+
+We can look at the correlation between the different genes of interest:
+
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=FALSE,fig.cap="heatmap of the correlation between SLC17A8 and the genes always found"}
+
+
+data_corr=norm_counts[,colnames(norm_counts)%in%table_tot[table_tot[,2]==100,1]]
+correlation=cor(data_corr)
+
+reorder_cormat <- function(cormat){
+# Utiliser la corrélation entre les variables
+  # comme mésure de distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+
+correlation=reorder_cormat(correlation)
+
+library(kableExtra)
+# dt %>%
+#   kbl(caption = "Cold vs Diffuse patients") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+# kable_classic(kbl(x=correlation,caption = "Correlations between the genes of interest"),full_width = F, html_font = "Cambria")
+ 
+ data_melt=melt(correlation)
+
+ggplot(data = data_melt, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()+ggtitle("Correlation between the genes \n identified in survival")+ theme(axis.text.x = element_text(angle = 90))+xlab("")+ylab("")+
+  scale_fill_gradient2(low = "dodgerblue3",
+                       mid = "#FFFFF6",
+                       high = "firebrick1") 
+```
+
+There is a negative correlation between SLC17A8 and RUNX3. We can also observe in a heatmap the counts in each of the selected genes, separated according to the cold/diffuse status or oligo/astro: 
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE,fig.cap="heatmap gene expression for the genes of interest, separated with cold/diffuse or astro/oligo"}
+cold_diffuse=datas[,2]
+heatmap_cold=cbind(data_corr,cold_diffuse)
+superheat(heatmap_cold[,-16],membership.rows =ifelse(heatmap_cold[,16]=="DIFFUSE","Diffuse","Cold"),bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+
+astro_oligo=datas[,7]
+heatmap_astro=cbind(data_corr,astro_oligo)
+superheat(heatmap_astro[,-16],membership.rows =ifelse(heatmap_astro[,16]=="astro","Astro","Oligo"),bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+
+```
+
+## Comparison with TCGA datas
+
+We can extract for 12 the gene expression for 385 patients being LLG and astro or oligo. Thus, we can compare the link with survival and these genes, in our data and in the transcan data, with the cox model test (raw and adjusted pvalue). The odd ratio represent the influence of the gene counts on the survival : if it is superior to 1, it means that a higher expression increase the risk, while an odd ratio inferior to 1 indicates that a higher expression decrease the risk. 
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE}
+
+data1<-as.data.frame( read_tsv(file = "data/data_tcga1.tsv"))
+data2<-as.data.frame( read_tsv(file = "data/data_tcga2.tsv"))
+data3<-as.data.frame( read_tsv(file = "data/types.tsv"))
+data2=data2[,-2]
+data1=data1[,-2]
+data3=data3[,-c(2,3)]
+data2=merge(data2,data3,by="sample")
+
+data_total_tcga=merge(data1,data2,by="sample",all=TRUE)
+data_total_tcga=data_total_tcga[!(is.na(data_total_tcga[,5])&is.na(data_total_tcga[,3])),]
+
+categorie=numeric(length(data_total_tcga[,1]))
+for (i in 1:length(categorie)){
+  if (!is.na(data_total_tcga[i,5])){
+    if (data_total_tcga[i,5]=="GTEX Brain"){
+      categorie[i]=data_total_tcga[i,20]
+  }
+
+  }
+  if (!is.na(data_total_tcga[i,3])){
+    if (data_total_tcga[i,3]%in%c("Glioblastoma Multiforme (GBM)","Treated primary GBM","Untreated primary (de novo) GBM")){
+      categorie[i]="GBM"
+    }
+    if (data_total_tcga[i,3]=="Astrocytoma"){
+      categorie[i]="Astrocytoma"
+    }
+    if (data_total_tcga[i,3]=="Oligodendroglioma"){
+      categorie[i]="Oligodendroglioma"
+    }
+    if (data_total_tcga[i,3]=="Oligoastrocytoma"){
+      categorie[i]="Oligoastrocytoma"
+    }
+  }
+}
+data_total_tcga=data_total_tcga[-c(1658,2160),]
+categorie=categorie[-c(1658,2160)]
+
+data_total_tcga=cbind(data_total_tcga,categorie)
+tcga_data=data_total_tcga[,c(6,7,8:19,21)]
+rownames(tcga_data)=data_total_tcga[,1]
+tcga_data=tcga_data[data_total_tcga[,21]%in%c("Oligodendroglioma","Astrocytoma"),]
+tcga_data=tcga_data[!(is.na(tcga_data[,1])|is.na(tcga_data[,2])),]
+tcga_data=cbind(tcga_data[,c(1,2)],tcga_data[,colnames(tcga_data)%in%colnames(heatmap_astro)],tcga_data[,15])
+
+heatmap_astro=cbind(dplyr::select(heatmap_astro,colnames(tcga_data)[3:12]),astro_oligo)
+
+
+odd_ratio_tcga=numeric(dim(tcga_data)[2]-3)
+odd_ratio_transcan=numeric(dim(tcga_data)[2]-3)
+pvalue_tcga=numeric(dim(tcga_data)[2]-3)
+pvalue_transcan=numeric(dim(tcga_data)[2]-3)
+
+pvalue_raw_tcga=numeric(dim(tcga_data)[2]-3)
+pvalue_raw_transcan=numeric(dim(tcga_data)[2]-3)
+
+for (i in 1:(dim(tcga_data)[2]-3)){
+  time=as.numeric(tcga_data[,2])
+  st=as.numeric(tcga_data[,1])
+  gene=as.numeric(tcga_data[,i+2])
+  
+  modele=coxph(Surv(time, st) ~ as.numeric(gene))
+  odd_ratio_tcga[i]=round(summary(modele)$coefficients[2],2)
+  pvalue_raw_tcga[i]=summary(modele)$coefficients[5]
+  
+  
+  
+  time=as.numeric(datas[,4])
+  st=as.numeric(datas[,3])
+  gene=as.numeric(heatmap_astro[,i])
+  
+  modele=coxph(Surv(time, st) ~ as.numeric(gene))
+  odd_ratio_transcan[i]=round(summary(modele)$coefficients[2],2)
+  pvalue_raw_transcan[i]=summary(modele)$coefficients[5]
+}
+
+
+pvalue_transcan=round(p.adjust(pvalue_raw_transcan,method="BH"),3)
+pvalue_tcga=round(p.adjust(pvalue_raw_tcga,method="BH"),3)
+pvalue_raw_transcan=round(pvalue_raw_transcan,3)
+pvalue_raw_tcga=round(pvalue_raw_tcga,3)
+
+genes=colnames(heatmap_astro)[1:10]
+
+table_survival=cbind(odd_ratio_transcan,pvalue_raw_transcan,pvalue_transcan,odd_ratio_tcga,pvalue_raw_tcga,pvalue_tcga)
+rownames(table_survival)=genes
+
+ kable_classic(kbl(x=table_survival,caption = "Cox model for the selected genes, tcga and transcan data"),full_width = F, html_font = "Cambria")
+
+```
+
+
+# Proteomics analysis 
+We are then interested in the Proteomics analysis. We have a total of 98 patients, with data on proteomics, obtained by DIA and the spectronaut software (and a median normalisation). As two patients seems to be outliers (TOR-ROB and BAL-PIE), we removed them from the analysis 
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=FALSE,fig.cap="boxplots of the counts for all patients"}
+
+#remove two patients with almost no counts
+data_total=data_total[!data_total[,1]%in%c("BAL-PIE","TOR-ROB"),]
+datas=data_total[data_total[,9]=="1",-c(8,9)]
+IDs=datas[,1]
+IDs_table_split=strsplit(as.character(IDs),split="_")
+IDs_table=numeric(length(datas[,1]))
+for (i in 1:length(IDs_table)){
+  IDs_table[i]=IDs_table_split[[i]][1]
+}
+datas[,1]=IDs_table
+table_proteo=datas[!duplicated(datas[,1]),]
+
+
+names_table=table_proteo[,8]
+names_table_split=strsplit(as.character(names_table),split=" ")
+names_table=numeric(length(names_table))
+for (i in 1:length(names_table)){
+  names_table[i]=names_table_split[[i]][1]
+}
+table_proteo=table_proteo[,c(2,8,1,3,4,5,6,7,9)]
+table_proteo[,2]=names_table
+row.names(table_proteo)=names_table
+table_proteo=table_proteo[!is.na(table_proteo[,2]),]
+table_proteo=table_proteo[,c(2,3,1,4,5,6,7,8,9)]
+
+
+matrix_proteomic=read.table("data/matrix_proteomics_final.txt")
+matrix_proteomic=matrix_proteomic[rownames(matrix_proteomic)%in%table_proteo[,1],]
+names_patients=row.names(matrix_proteomic)
+table_proteo=table_proteo[names_patients,]
+
+counts=matrix_proteomic
+
+norm_counts <- apply(counts, MARGIN = 2, function(v) {
+  log2((v + 0.5)/(sum(v) + 1) * 10^6)
+})
+norm_counts <- as.data.frame(norm_counts)
+raw_counts=counts
+
+
+
+output_cold_oligo=table_proteo[,9]
+
+
+```
+
+
+## Cold vs Diffuse {.tabset .tabset-pills}
+
+We have 37 cold and 59 diffuse patients. Four patients are "G4": two cold and two diffuse, 4 astro patients.
+
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE,cache=FALSE}
+
+table_na=table_proteo[!is.na(table_proteo[,4])&!is.na(table_proteo[,6]),]
+Age=c(round(mean(table_na[table_na[,3]=="COLD",7]),1),round(mean(table_na[table_na[,3]=="DIFFUSE",7]),1))
+Female=c(table(table_na[table_na[,3]=="COLD",6])[1],table(table_na[table_na[,3]=="DIFFUSE",6])[1])
+Male=c(table(table_na[table_na[,3]=="COLD",6])[2],table(table_na[table_na[,3]=="DIFFUSE",6])[2])
+Event=c(table(table_na[table_na[,3]=="COLD",4])[2],table(table_na[table_na[,3]=="DIFFUSE",4])[2])
+No_event=c(table(table_na[table_na[,3]=="COLD",4])[1],table(table_na[table_na[,3]=="DIFFUSE",4])[1])
+Median_followup=c(round(summary(table_na[table_na[,3]=="COLD",5])[2],1),round(summary(table_na[table_na[,3]=="DIFFUSE",5])[2],1))
+cold_diffuse_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(cold_diffuse_table)=c("Cold (n=37)","Diffuse (n=59) ")
+rownames(cold_diffuse_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+library(kableExtra)
+# dt %>%
+#   kbl(caption = "Cold vs Diffuse patients") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+ kable_classic(kbl(x=cold_diffuse_table,caption = "Cold vs Diffuse patients"),full_width = F, html_font = "Cambria")
+
+ 
+```
+
+
+
+We performed a PCA with all proteins values, with a separation depending on the cold or diffuse status: 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,results=FALSE, fig.show='hide',cache=FALSE}
+counts_pca <- raw_counts
+counts_pca <- round((counts_pca+1),0)
+counts_pca <- vst(t(counts_pca))
+
+counts_pca_scaled <- base::scale(t(counts_pca), center=TRUE, scale=TRUE)
+
+res.pca=PCA(counts_pca_scaled , graph=FALSE)
+#plot.PCA(res.pca, axes=c(1, 2), choix="ind")
+Cold_or_diffuse=as.factor(table_proteo[,3])
+
+pca_data <- cbind.data.frame(res.pca$ind$coord[, 1:4],as.factor(table_proteo[,3]),table_proteo[,2])
+colnames(pca_data)=c("Dim.1","Dim.2","Dim.3","Dim.4","Cold_diffuse","ID")
+table_coord=res.pca$ind$coord[,c(1,2)]
+
+p2 <- ggplot(pca_data, aes(x=Dim.1, y=Dim.2, colour = as.factor(table_proteo[,3]))) +
+ # viridis::scale_color_viridis("Cold_diffuse", discrete = TRUE,end = 0.8)
+    scale_color_manual(values= c("#E7B800", "#2E9FDF"))+
+  theme_bw() +
+  geom_point(size=2, alpha=1) +
+  guides(color=guide_legend(override.aes = list(alpha=1),title="Cold or Diffuse")) +
+  xlab(label=paste0("PC1 (", round(res.pca$eig[1,2], 2),"% of total variance explained)")) +
+  ylab(label=paste0("PC2 (", round(res.pca$eig[2,2], 2), "% of total variance explained)")) +
+  ggtitle("", subtitle = "First factorial plan, proteomics data")
+
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE, fig.cap="PCA of the proteomics data, with G4 patients (vst transformation and scaled data)"}
+
+p2
+
+```
+
+
+
+
+We will then look protein per protein if there is a difference between cold and diffuse. For that, we use the dearseq package. 
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+output=ifelse(table_proteo[,3]=="COLD",0,1)
+Y=matrix(output,ncol=1,nrow=length(output))
+
+scores=dear_seq(exprmat=t(as.matrix(counts)),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+
+
+genewise_dearseq_cold=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_cold[,1]=as.character(genewise_dearseq_cold[,1])
+genewise_dearseq_cold[,2]=as.numeric(as.character(genewise_dearseq_cold[,2]))
+genewise_dearseq_cold[,3]=as.numeric(as.character(genewise_dearseq_cold[,3]))
+genewise_dearseq_cold[,4]=as.numeric(as.character(genewise_dearseq_cold[,4]))
+genewise_dearseq_cold=genewise_dearseq_cold[order(genewise_dearseq_cold[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_cold)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+
+
+
+
+
+patients_cold=norm_counts[output==0,]
+patients_diffuse=norm_counts[output==1,]
+means_diffuse=numeric(length(patients_cold[1,]))
+means_cold=numeric(length(patients_cold[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_diffuse[i]=mean(patients_diffuse[,i])
+  means_cold[i]=mean(patients_cold[,i])
+}
+
+fold_change=data.frame(colnames(patients_cold),means_diffuse-means_cold)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_proteo_cold=merge(genewise_dearseq_cold,fold_change,by="ID")
+total_proteo_cold=total_proteo_cold[order(total_proteo_cold[,4],total_proteo_cold[,5]),]
+write.xlsx(total_proteo_cold[total_proteo_cold[,2]<0.05,], file = "dearseq_proteo_C_D_wg4.xlsx",col.names = TRUE,row.names = FALSE)
+
+
+total_proteo_cold$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+total_proteo_cold$diffexpressed[total_proteo_cold$log2FoldChange > 0.6 & total_proteo_cold$pvalue < 0.05] <- "UP"
+# if log2Foldchange < (-0.6) and pvalue < 0.05, set as "DOWN"
+total_proteo_cold$diffexpressed[total_proteo_cold$log2FoldChange < (-0.6) & total_proteo_cold$pvalue < 0.05] <- "DOWN"
+
+total_proteo_cold$delabel <- NA
+total_proteo_cold$delabel[total_proteo_cold$diffexpressed != "NO"] <- total_proteo_cold$ID[total_proteo_cold$diffexpressed != "NO"]
+
+
+plot1=ggplot(data=total_proteo_cold, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+  geom_text_repel()  + scale_color_manual(values= c( "#e7b800","#abadac", "#2E9FDF")) +ggtitle("Log2 Fold change in function of pvalues")
+
+plot2=ggplot(data=total_proteo_cold,aes(x=log2FoldChange))+geom_density()+xlim(c(-5,5))+ theme_minimal()+ggtitle("Distribution of Log2FoldChange") 
+
+
+
+
+
+
+output_test=output_cold_oligo[output_cold_oligo%in%c(1,4)]
+output_test=ifelse(output_test==1,0,1)
+Y=matrix(output_test,ncol=1,nrow=length(output_test))
+raw_counts_test=raw_counts[output_cold_oligo%in%c(1,4),]
+norm_counts_test=norm_counts[output_cold_oligo%in%c(1,4),]
+
+scores=dear_seq(exprmat=t(as.matrix(raw_counts_test)),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+genewise_dearseq_cold_oligo=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_cold_oligo[,1]=as.character(genewise_dearseq_cold_oligo[,1])
+genewise_dearseq_cold_oligo[,2]=as.numeric(as.character(genewise_dearseq_cold_oligo[,2]))
+genewise_dearseq_cold_oligo[,3]=as.numeric(as.character(genewise_dearseq_cold_oligo[,3]))
+genewise_dearseq_cold_oligo[,4]=as.numeric(as.character(genewise_dearseq_cold_oligo[,4]))
+genewise_dearseq_cold_oligo=genewise_dearseq_cold_oligo[order(genewise_dearseq_cold_oligo[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_cold_oligo)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+dearseq_cold_oligo_DE=genewise_dearseq_cold_oligo[genewise_dearseq_cold_oligo[,2]<0.05,]
+proteins_DE=genewise_dearseq_cold_oligo[genewise_dearseq_cold_oligo[,2]<0.05,1]
+pvalues_DE=numeric(length(proteins_DE))
+fold_change=numeric(length(proteins_DE))
+for (i in 1:length(proteins_DE)){
+  model=coxph(Surv(time=as.numeric(Time),event=as.numeric(Reccurence))~norm_counts[,colnames(norm_counts)==proteins_DE[i]],data=datas)
+  pvalues_DE[i]=summary(model)$coefficients[5]
+  mean_CO=mean(norm_counts_test[output_test==0,colnames(norm_counts_test)==proteins_DE[i]])
+  mean_DA=mean(norm_counts_test[output_test==1,colnames(norm_counts_test)==proteins_DE[i]])
+  fold_change[i]=mean_DA-mean_CO
+
+}
+dearseq_cold_oligo_DE=cbind(dearseq_cold_oligo_DE,fold_change)
+write.table(dearseq_cold_oligo_DE,"proteo_Cold_oligo.txt",col.names = TRUE,row.names = FALSE)
+```
+
+dearseq identifies `r dim(genewise_dearseq_cold[genewise_dearseq_cold[,2]<0.05,])[1]` proteins that are differentially expressed between cold and diffuse. Here are the first genes in term of p-value:
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+rownames(total_proteo_cold)=NULL
+ kable_classic(kbl(x=total_proteo_cold[1:10,c(1,2,3,4,5)],caption = "Cold vs Diffuse genes"),full_width = F, html_font = "Cambria")
+
+```
+
+We can look at the vulcano plot and also the distribution of the log2 Fold change, in the following figure. The vulcano plot shows the log10(pvalue) in function of the log2 Fold change, which allows to see if the significant genes are up regulated or down regulated (cold as base). A positive log2 Fold change indicates that the gene is, on average, more expressed among the diffuse patients, while a negative log2 Fold change indicates that the gene is more expressed among the cold patients. 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,fig.cap="Vulcano plot and distribution of log2 Fold change",cache=FALSE}
+plot1
+plot2
+```
+
+We can observe the brier score associated with these genes. The brier score is an indicator of the prediction aibility, between 1 and 0, 0 being a perfect predictor and 1 a poor predictor: 
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+
+Y <- output
+X <- norm_counts[,colnames(norm_counts)%in%genewise_dearseq_cold[genewise_dearseq_cold[,2]<0.05,1]]
+temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+for (i in 1:dim(X)[1]){ # leave one out
+  for (j in 1:dim(X)[2]){
+    fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+    prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+    temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+  }
+}
+
+BS <- NULL
+for (k in 1:dim(X)[2]){ # gene k
+  BS[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+}
+BS=cbind(colnames(X),BS)
+colnames(BS)=c("ID","BS_v2")
+dearseq_brier=merge(genewise_dearseq_cold,BS,by="ID")
+dearseq_brier=cbind(dearseq_brier,rank(dearseq_brier[,5]))
+dearseq_brier=as.data.frame(dearseq_brier)
+colnames(dearseq_brier)=c("ID","pvalue","rank_pvalue","raw_pvalue","BS","rank_BS")
+```
+```{r,echo=F,eval=T,message=FALSE,warning=FALSE, fig.cap="Brier score for the genes identified by dearseq for the cold vs diffuse status (with G4)",cache=FALSE}
+BS_dearseq_cold=as.numeric(as.character(dearseq_brier[,5]))
+df <- data.frame(Brier.score = BS_dearseq_cold,
+                 rank=rank(BS_dearseq_cold,ties.method = "random"),
+                 method=as.factor(rep("dearseq_asym",length(BS_dearseq_cold))))
+
+g_dearseq_cold <- ggplot(df[df[,3]=="dearseq_asym",], aes(x=rank, y=Brier.score)) +
+  theme_minimal() +
+  # scale_color_manual( values = c("#CCCCCC", grDevices::heat.colors(n=2)[3])) +
+  geom_point(size=1.5,alpha=0.6,color="#FF9900") +
+  theme(axis.title = element_text(size=16), axis.text = element_text(size=12), legend.title = element_text(size=16), legend.text = element_text(size=14)) +
+  #  guides(color = guide_legend(override.aes = list(alpha=1))) +
+  geom_rug(alpha=0.5,color="#FF9900")  + 
+  ylab("Brier Score")+ggtitle("Brier score of identified proteins for Cold vs Diffuse")
+g_dearseq_cold
+```
+
+## Astro vs Oligo {.tabset .tabset-pills}
+We also have the Astro or Oligo status of the patients, with a total of 37 Astro patients and 56 Oligo patients. The following table presents the different characteristics: 
+
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE,cache=FALSE}
+table_na=table_proteo[!is.na(table_proteo[,4])&!is.na(table_proteo[,6]),]
+Age=c(round(mean(table_na[table_na[,8]=="oligo",7]),1),round(mean(table_na[table_na[,8]=="astro",7]),1))
+Female=c(table(table_na[table_na[,8]=="oligo",6])[1],table(table_na[table_na[,8]=="astro",6])[1])
+Male=c(table(table_na[table_na[,8]=="oligo",6])[2],table(table_na[table_na[,8]=="astro",6])[2])
+Event=c(table(table_na[table_na[,8]=="oligo",4])[2],table(table_na[table_na[,8]=="astro",4])[2])
+No_event=c(table(table_na[table_na[,8]=="oligo",4])[1],table(table_na[table_na[,8]=="astro",4])[1])
+Median_followup=c(round(summary(table_na[table_na[,8]=="oligo",5])[3],1),round(summary(table_na[table_na[,8]=="astro",5])[3],1))
+oligo_astro_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(oligo_astro_table)=c("Oligo (n=56)","Astro (n=37)")
+rownames(oligo_astro_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+library(kableExtra)
+
+ kable_classic(kbl(x=oligo_astro_table,caption = "Oligo vs Astro patients"),full_width = F, html_font = "Cambria")
+
+```
+The same PCA analysis can be done, this time by highlighting the oligo vs astro status : 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,results=FALSE,fig.show='hide',cache=FALSE}
+table_temp=table_proteo[!is.na(table_proteo[,8]),]
+counts_pca <- raw_counts[!is.na(table_proteo[,8]),]
+counts_pca <- round((counts_pca+1),0)
+counts_pca <- vst(t(counts_pca))
+
+counts_pca_scaled <- base::scale(t(counts_pca), center=TRUE, scale=TRUE)
+
+res.pca=PCA(counts_pca_scaled , graph=FALSE)
+
+#plot.PCA(res.pca, axes=c(1, 2), choix="ind")
+Astro_oligo=as.factor(table_temp[,8])
+pca_data <- cbind.data.frame(res.pca$ind$coord[, 1:4],as.factor(table_temp[,8]),table_temp[,2])
+colnames(pca_data)=c("Dim.1","Dim.2","Dim.3","Dim.4","Astro_oligo","ID")
+table_coord=res.pca$ind$coord[,c(1,2)]
+particuliers=table_coord[table_coord[,1]>quantile(table_coord[,1],0.97)|table_coord[,1]<quantile(table_coord[,1],0.03)|table_coord[,2]>quantile(table_coord[,2],0.98)|table_coord[,2]<quantile(table_coord[,2],0.02),]
+
+
+p2 <- ggplot(pca_data, aes(x=Dim.1, y=Dim.2, colour = as.factor(table_temp[,8]))) +
+ # viridis::scale_color_viridis("Cold_diffuse", discrete = TRUE,end = 0.8)
+  #  scale_color_manual(values= c("#E7B800", "#2E9FDF"))+
+   # scale_color_manual(values= c("#E7B800", "#2E9FDF"))+
+  theme_bw() +
+  geom_point(size=2, alpha=1) +
+  guides(color=guide_legend(override.aes = list(alpha=1),title="Oligo vs Astro")) +
+  xlab(label=paste0("PC1 (", round(res.pca$eig[1,2], 2),"% of total variance explained)")) +
+  ylab(label=paste0("PC2 (", round(res.pca$eig[2,2], 2), "% of total variance explained)")) +
+  ggtitle("", subtitle = "First factorial plan, proteomic data")
+
+```
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE,fig.cap="PCA of the proteomics data, with G4 patients (vst transformation and scaled data)",cache=FALSE}
+p2
+```
+
+
+We can look at the characteristics of the patients outside of the majority of the patients:
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE,cache=FALSE}
+datas=table_proteo
+table_particulier=datas[datas[,1]%in%rownames(particuliers),]
+table_particulier=table_particulier[,c(2,6,7,3,8,5,4)]
+table_particulier[,6]=round(table_particulier[,6],2)
+rownames(table_particulier)=NULL
+```
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+library(kableExtra)
+# dt %>%
+#   kbl(caption = "Cold vs Diffuse patients") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+ kable_classic(kbl(x=table_particulier,caption = "Characteristics patients outsite of PCA majority"),full_width = F, html_font = "Cambria")
+
+```
+
+
+
+
+We look now at the proteins selected by dearseq
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+table_temp=table_proteo[!is.na(table_proteo[,8]),]
+
+output_oligo=ifelse(table_temp[,8]=="oligo",0,1)
+Y=matrix(output_oligo,ncol=1,nrow=length(output_oligo))
+
+scores=dear_seq(exprmat=t(as.matrix( counts[table_temp[,1],])),variables2test = Y,preprocessed = FALSE,which_test = "asymptotic")
+
+
+genewise_dearseq_astro=as.data.frame(cbind(rownames(scores$pvals),scores$pvals[,2],rank(scores$pvals[,2]),scores$pvals[,1]))
+genewise_dearseq_astro[,1]=as.character(genewise_dearseq_astro[,1])
+genewise_dearseq_astro[,2]=as.numeric(as.character(genewise_dearseq_astro[,2]))
+genewise_dearseq_astro[,3]=as.numeric(as.character(genewise_dearseq_astro[,3]))
+genewise_dearseq_astro[,4]=as.numeric(as.character(genewise_dearseq_astro[,4]))
+genewise_dearseq_astro=genewise_dearseq_astro[order(genewise_dearseq_astro[,2],decreasing = FALSE),]
+colnames(genewise_dearseq_astro)=c("ID","pvalue","rank_pvalue","raw_pvalue")
+#write.xlsx(genewise_dearseq_astro[genewise_dearseq_astro[,2]<0.05,], file = "dearseq_proteo_O_A_ng4.xlsx",col.names = TRUE)
+
+
+
+patients_oligo=norm_counts[output_oligo==0,]
+patients_astro=norm_counts[output_oligo==1,]
+means_oligo=numeric(length(patients_oligo[1,]))
+means_astro=numeric(length(patients_astro[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_oligo[i]=mean(patients_oligo[,i])
+  means_astro[i]=mean(patients_astro[,i])
+}
+
+fold_change=data.frame(colnames(patients_astro),means_oligo-means_astro)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_proteo_astro=merge(genewise_dearseq_astro,fold_change,by="ID")
+total_proteo_astro=total_proteo_astro[order(total_proteo_astro[,4],total_proteo_astro[,5]),]
+
+
+
+total_proteo_astro$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+total_proteo_astro$diffexpressed[total_proteo_astro$log2FoldChange > 0.6 & total_proteo_astro$pvalue < 0.05] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+total_proteo_astro$diffexpressed[total_proteo_astro$log2FoldChange <  (-0.6) & total_proteo_astro$pvalue < 0.05] <- "DOWN"
+
+total_proteo_astro$delabel <- NA
+total_proteo_astro$delabel[total_proteo_astro$diffexpressed != "NO"] <- total_proteo_astro$ID[total_proteo_astro$diffexpressed != "NO"]
+
+
+plot1=ggplot(data=total_proteo_astro, aes(x=log2FoldChange, y=-log10(pvalue), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+  geom_text_repel()  + scale_color_manual(values=  c( "#abadac", "#00bfc4","#F8766D")) +ggtitle("Log2 Fold change in function of pvalues")
+
+plot2=ggplot(data=total_proteo_astro,aes(x=log2FoldChange))+geom_density()+xlim(c(-2,2))+ theme_minimal()+ggtitle("Distribution of Log2FoldChange") 
+```
+
+To identify which genes are differentialy expressed between the oligo and astro groups, we perform dearseq, which finds `r dim(genewise_dearseq_astro[genewise_dearseq_astro[,2]<0.05,])[1]` proteins. Here are the first proteins in term of p-value:
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+rownames(total_proteo_astro)=NULL
+ kable_classic(kbl(x=total_proteo_astro[1:10,c(1,2,3,4,5)],caption = "Oligo vs Astro genes"),full_width = F, html_font = "Cambria")
+
+```
+
+We can look at the vulcano plot and also the distribution of the log2 Fold change, in the following figure. The vulcano plot shows the log10(pvalue) in function of the log2 Fold change, which allows to see if the significant genes are up regulated or down regulated (astro as base). A positive log2 Fold change indicates that the gene is, on average, more expressed among the oligo patients, while a negative log2 Fold change indicates that the gene is more expressed among the astro patients. 
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,fig.cap="Vulcano plot and distribution of log2 Fold change",cache=FALSE}
+plot1+plot2
+```
+
+
+## Survival analysis {.tabset .tabset-pills}
+
+
+When can first perform a simple survival analysis by using a cox model on the base covariates: 
+
+```{r, message=FALSE,warning=FALSE,cache=FALSE}
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=table_proteo)
+summary(modele_base)
+
+```
+
+The p-value is significant for the cold vs diffuse, and the AIC of the model is `r extractAIC(modele_base)[2]`.
+We are now interested to identify the genes that are linked with the risk of recurrence. For that, we use random forest methods. 
+
+```{r,eval=T,echo=F, message=FALSE,warning=FALSE,cache=TRUE,fig.cap="First proteins in term of importances for the random forests (with G4)",cache=TRUE}
+ v.obj_baseline<- rfsrc(Surv(time=as.numeric(Time), event=as.numeric(Reccurence))~.,data=table_proteo[,-c(1,2)],ntree=2000,block.size=50,mtry=dim(table_proteo[,1])[2])
+  importance_baseline=vimp.rfsrc(v.obj_baseline)
+  
+  
+  datas_rf=cbind(table_proteo[,-c(1,2)],norm_counts)
+  v.obj<- rfsrc(Surv(time=as.numeric(Time), event=as.numeric(Reccurence))~.,data=datas_rf,ntree=2000,block.size=50,mtry=(dim(datas_rf)[2])/2)
+  importance=vimp.rfsrc(v.obj)
+  importances=importance$importance
+  selected=names(importances[importances>=0.0003])
+  table_rf=as.data.frame(cbind(selected,importances[importances>=0.0003]))
+    colnames(table_rf)=c("ID","importance")
+  write.xlsx(table_rf, file = "survival_proteo_wg4.xlsx",col.names = TRUE,row.names = FALSE)
+  total_importances=as.data.frame(cbind(names(importances),importances))
+
+dearseq=genewise_dearseq_cold
+results_rf=merge(table_rf,dearseq)
+results_rf=results_rf[,c(1,2,3,5)]
+results_rf[,2]=round(as.numeric(results_rf[,2]),digits = 5)
+
+
+
+results_rf=results_rf[order(results_rf[,2],decreasing = TRUE),]
+results_rf[,1]=factor(results_rf[,1],levels=c(results_rf[1:dim(results_rf)[1],1]))
+
+ggplot(results_rf,aes(x=ID,y=importance))+
+  geom_point()+ scale_colour_viridis_d() + xlab("selected proteins with survival random forest")+ theme(axis.text.x = element_blank())
+
+
+
+```
+
+We have `r length(selected)` proteins with an importance>0.0003 selected by the random forest method.
+
+
+
+## Proteins always found by random forest
+
+As the random forest are, random, the results can change from one time to another. We computed multiple times (7) the random forest and looked at the genes that were similar from one iteration to the other 
+
+
+```{r,echo=F,message=FALSE,warning=FALSE,cache=TRUE}
+results_tot=read.table("data/results_rf_proteo_avec2.txt")
+results_tot=results_tot[,-1]
+results_tot=results_tot[results_tot[,2]>0.0003,]
+liste_selected=as.list(NULL)
+plots=as.list(NULL)
+plots_selected=as.list(NULL)
+results=results_tot[results_tot[,3]==1,]
+results=results[!duplicated(results[,1]),]
+results=results[,c(1,2)]
+colnames(results)=c("ID","importance")
+liste_merged=results
+for (i in 2:10){
+  results=results_tot[results_tot[,3]==i,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  liste_merged=merge(liste_merged,results,by="ID")
+}
+liste_merged_tot=liste_merged
+liste_merged=liste_merged[,1]
+for (test in 1:10){
+  results=results_tot[results_tot[,3]==test,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  dearseq=genewise_dearseq_cold
+  results_rf=merge(results,dearseq)
+  results_rf=results_rf[,c(1,2,3,5)]
+  patients_cold=norm_counts[output==0,colnames(norm_counts)%in%results_rf[,1]]
+  patients_diffuse=norm_counts[output==1,colnames(norm_counts)%in%results_rf[,1]]
+  means_diffuse=numeric(length(patients_cold[1,]))
+  means_cold=numeric(length(patients_cold[1,]))
+  for (i in 1:length(patients_cold[1,])){
+    means_diffuse[i]=mean(patients_diffuse[,i])
+    means_cold[i]=mean(patients_cold[,i])
+  }
+  fold_change=means_diffuse-means_cold
+  results_rf=cbind(results_rf,fold_change)
+  results_rf[,2]=round(as.numeric(results_rf[,2]),digits = 5)
+  summary(results_rf[,3])
+  #### BRIER SCORE : capacitÃ© predictive d'un gÃ¨ne
+  # proche de 0 => bon predicteur
+  # proche de 1 => mauvais predicteur
+  Y <- output
+  X <- norm_counts[,colnames(norm_counts)%in%results_rf[,1]]
+  temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+  for (i in 1:dim(X)[1]){ # leave one out
+    for (j in 1:dim(X)[2]){
+      fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+      prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+      temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+    }
+  }
+  BS <- NULL
+  for (k in 1:dim(X)[2]){ # gene k
+    BS[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+  }
+  BS=cbind(colnames(X),BS)
+  colnames(BS)=c("ID","BS_v2")
+  
+  
+      Y <- output_oligo
+  counts_oligo=norm_counts[table_temp[,1],]
+  X <- counts_oligo[,colnames(counts_oligo)%in%results_rf[,1]]
+  temp=matrix(nrow =dim(X)[1],ncol=dim(X)[2] )
+  for (i in 1:dim(X)[1]){ # leave one out
+    for (j in 1:dim(X)[2]){
+      fit <- glm(Y~X,data = data.frame(Y=as.factor(Y[-i]),X = X[-i,j]),family=binomial()) # On apprend sans la ieme observation
+      prob <- predict(fit,newdata=data.frame(X=X[i,j]), type="response") # On predit la ieme observation
+      temp[i,j] <- prob # vecteur proba prÃ©dite d'appartenir Ã une condition
+    }
+  }
+  BS_astro <- NULL
+  for (k in 1:dim(X)[2]){ # gene k
+    BS_astro[k] <- brier(Y, temp[,k])$bs # somme de la diffÃ©rence au carrÃ© entre la proba pour chaque obs et la condition
+  }
+  BS_astro=cbind(colnames(X),BS_astro)
+  colnames(BS_astro)=c("ID","BS_v2")
+  
+  results_rf=cbind(results_rf,as.numeric(BS[,2]))
+  results_rf=results_rf[order(results_rf[,2],decreasing=TRUE),]
+  results_rf=results_rf[!is.na(results_rf[,1]),]
+  colnames(results_rf)=c("ID","importance","dearseq","dearseq_raw","fold_change","BS")
+  datas_total=melt(results_rf,id.var="ID")
+  datas_total[,1]=factor(datas_total[,1],levels=c(datas_total[1:dim(results_rf)[1],1]))
+  liste=results_rf[results_rf[,3]<0.05|results_rf[,5]>1|results_rf[,5]< (-1),1]
+  liste_selected[[test]]=liste
+  color=numeric(length(datas_total[,1]))
+  #color=ifelse(datas_total[,1]%in%liste,"red","black")
+  color=ifelse(datas_total[,1]%in%liste_merged,"blue","black")
+  datas_highlight=as.data.frame(cbind(datas_total,color))
+  plots[[test]]=ggplot(datas_highlight[datas_highlight[,2]!="dearseq",],aes(x=ID,y=value))+
+    geom_point(color=color[datas_highlight[,2]!="dearseq"])+
+    facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected proteins with survival random forest")+ theme(axis.text.x = element_blank())
+  
+  
+  liste=results_rf[results_rf[,3]<0.05|results_rf[,5]>1|results_rf[,5]< (-1),1]
+  color=numeric(length(datas_total[,1]))
+  color=ifelse(datas_total[,1]%in%liste,"red","black")
+  datas_highlight=as.data.frame(cbind(datas_total,color))
+  plots_selected[[test]]=ggplot(datas_highlight[datas_highlight[,2]!="dearseq",],aes(x=ID,y=value))+
+    geom_point(color=color[datas_highlight[,2]!="dearseq"])+
+    facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected proteins with survival random forest")+ theme(axis.text.x = element_blank())
+  
+  
+}
+plot1=(plots[[1]]+plots[[2]])/(plots[[3]]+plots[[4]])
+plot2=(plots_selected[[1]]+plots_selected[[2]])/(plots_selected[[3]]+plots_selected[[4]])
+```
+
+We can first see which genes are always found as important genes (here in blue)
+```{r,echo=F,message=FALSE,warning=FALSE,fig.cap="Repetition of the random forest, with the genes always found (in blue)",cache=FALSE}
+plot1
+```
+
+Here is a table that show with genes that are always identified and their mean importance, followed by a graph showing how often a gene is identified among all tries
+```{r,echo=F,message=FALSE,warning=FALSE,fig.cap="How often each gene is found in the total repetitions",cache=FALSE}
+means_tot=numeric(length(liste_merged_tot[,1]))
+for (i in 1:length(liste_merged_tot[,1])){
+  means_tot[i]=mean(as.numeric(liste_merged_tot[i,-1]))
+}
+liste_found=as.data.frame(cbind(liste_merged_tot[,1],means_tot))
+colnames(liste_found)=c("protein","mean importance")
+kable_classic(kbl(x=liste_found,caption = "Proteins always found and their mean importance"),full_width = F, html_font = "Cambria")
+
+
+results=results_tot[results_tot[,3]==1,]
+results=results[!duplicated(results[,1]),]
+results=results[,c(1,2)]
+colnames(results)=c("ID","importance")
+liste_merged2=results
+for (i in 2:10){
+  results=results_tot[results_tot[,3]==i,]
+  results=results[!duplicated(results[,1]),]
+  results=results[,c(1,2)]
+  colnames(results)=c("ID","importance")
+  liste_merged2=merge(liste_merged2,results,all=TRUE)
+}
+
+variables=unique(liste_merged2[,1])
+percent=numeric(length(variables))
+mean_imp=numeric(length(variables))
+for (i in 1:length(variables)){
+  results_variable=liste_merged2[liste_merged2[,1]==variables[i],]
+  percent[i]=100*round(dim(results_variable)[1]/10,2)
+  mean_imp[i]=mean(results_variable[,2])
+}
+
+table_tot=as.data.frame(cbind(variables,percent,round(mean_imp,6)))
+
+
+colnames(table_tot)=c("ID","percent","importance")
+table_tot=merge(table_tot,total_proteo_cold,by="ID")
+table_tot=table_tot[,c(1,2,3,4,7,8)]
+table_tot=merge(table_tot,total_proteo_astro,by="ID")
+table_tot=table_tot[,c(1,2,3,4,5,6,7,10,11)]
+colnames(table_tot)=c("ID","percent","RF_importance","dearseq_cold_diffuse","Log2FC_cold_diffuse","diff_expr_cold_diffuse","dearseq_astro_oligo","Log2FC_astro_oligo","diff_expr_astro_oligo")
+table_tot[,2]=as.numeric(table_tot[,2])
+ 
+table_tot=table_tot[order(table_tot[,2],table_tot[,3],decreasing = TRUE),]
+
+
+table_tot[,2]=as.numeric(table_tot[,2])
+table_tot=table_tot[order(table_tot[,2],table_tot[,3],decreasing = TRUE),]
+table_tot_proteo=table_tot
+write.xlsx(table_tot,"survival_total_proteo.xlsx",row.names = FALSE,col.names = TRUE)
+
+table_nombres=table(liste_merged2[,1])
+table_nombres=as.data.frame(cbind(rep(1,length(table_nombres)),table_nombres))
+colnames(table_nombres)=c("number of identifications","occurences")
+ggplot(as.data.frame(table_nombres),aes(x=occurences)) + 
+  geom_histogram()
+```
+
+But can also see which proteins are identified as linked with cold/diffuse status (here in red)
+```{r,echo=F,message=FALSE,warning=FALSE,fig.cap="Repetition of the random forest, with the proteins linked with cold/diffuse status (in red)",cache=FALSE}
+plot2
+```
+
+Moreover, we can look and the proteins that are always found, as presented in the following table: 
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+kable_classic(kbl(x=table_tot[table_tot[,2]==100,],caption = "Proteins always found with random forest"),full_width = F, html_font = "Cambria")
+
+total_rf_CD=table_tot[table_tot[,2]==100,c(1,3,4,5)]
+total_rf_CD=merge(total_rf_CD,BS,by="ID")
+colnames(total_rf_CD)=c("ID","Mean importance","dearseq p-value","log2 fold_change","Brier score")
+total_rf_CD=total_rf_CD[order(total_rf_CD[,2],decreasing=TRUE),]
+datas_total=melt(total_rf_CD,id.var="ID") 
+
+liste=table_tot[table_tot[,4]<0.05|table_tot[,5]>0.6|table_tot[,5]< (-0.6),1]
+color=numeric(length(datas_total[,1]))
+color=ifelse(datas_total[,1]%in%liste,"red","black")
+datas_highlight_CD=as.data.frame(cbind(datas_total,color))
+datas_highlight_CD[,1]=factor(datas_highlight_CD[,1],levels=c(datas_highlight_CD[1:dim(total_rf_CD)[1],1]))
+datas_highlight_CD[,3]=as.numeric(datas_highlight_CD[,3])
+
+ggplot(datas_highlight_CD,aes(x=ID,y=value))+
+  geom_point(color=color)+
+  facet_grid(variable~.,scale="free") + xlab("selected proteins with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main proteins in survival and link with Cold vs Diffuse")
+
+
+total_rf_AO=table_tot[table_tot[,2]==100,c(1,3,7,8)]
+total_rf_AO=merge(total_rf_AO,BS_astro,by="ID")
+colnames(total_rf_AO)=c("ID","Mean importance","dearseq p-value","log2 fold_change","Brier score")
+datas_total=melt(total_rf_AO,id.var="ID") 
+
+liste=table_tot[table_tot[,7]<0.05|table_tot[,8]>0.6|table_tot[,8]< (-0.6),1]
+color=numeric(length(datas_total[,1]))
+color=ifelse(datas_total[,1]%in%liste,"blue","black")
+datas_highlight_AO=as.data.frame(cbind(datas_total,color))
+datas_highlight_AO[,1]=factor(datas_highlight_AO[,1],levels=c(datas_highlight_AO[1:dim(total_rf_AO)[1],1]))
+datas_highlight_AO[,3]=as.numeric(datas_highlight_AO[,3])
+
+ggplot(datas_highlight_AO,aes(x=ID,y=value))+
+  geom_point(color=color)+
+  facet_grid(variable~.,scale="free")+ scale_colour_viridis_d() + xlab("selected genes with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main genes in survival and link \n with Oligodendroglioma vs Astrocytoma")
+Type=c(rep("Mean importance",length(datas_highlight_CD[datas_highlight_CD[,2]=="Mean importance",1])),rep("Cold vs Diffuse",length(datas_highlight_CD[datas_highlight_CD[,2]!="Mean importance",1])))
+datas_highlight_CD=cbind(datas_highlight_CD,Type)
+Type=rep("Oligodendroglioma \n vs Astrocytoma",length(datas_highlight_AO))
+datas_highlight_AO=cbind(datas_highlight_AO,Type)
+datas_tot_survival=rbind(datas_highlight_CD,datas_highlight_AO[datas_highlight_AO[,2]!="Mean importance",])
+datas_tot_survival[,5]= factor(datas_tot_survival[,5], levels = c("Mean importance", "Cold vs Diffuse", "Oligodendroglioma \n vs Astrocytoma"))
+
+ggplot(datas_tot_survival,aes(x=ID,y=value,shape=Type,colour=color))+
+geom_point()+
+facet_grid(variable~.,scale="free") + xlab("selected proteins with survival random forest") + theme(axis.text.x = element_text(angle = 45,hjust=1))+ggtitle("Main proteins in survival and link with \n Cold vs Diffuse or with \n Oligodendroglioma vs Astrocytoma")+ guides(color = FALSE)+scale_colour_manual(values=c("black","blue","red"))
+
+
+
+
+```
+
+
+## Proteins of interest {.tabset .tabset-pills}
+
+
+
+We can look at the correlation between the different proteins of interest:
+
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE,fig.cap="heatmap of the correlation between the proteins always found"}
+
+
+data_corr=norm_counts[,colnames(norm_counts)%in%table_tot_proteo[table_tot_proteo[,2]==100,1]]
+correlation=cor(data_corr)
+
+reorder_cormat <- function(cormat){
+# Utiliser la corrélation entre les variables
+  # comme mésure de distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+
+correlation=reorder_cormat(correlation)
+# dt %>%
+#   kbl(caption = "Cold vs Diffuse patients") %>%
+#   kable_classic(full_width = F, html_font = "Cambria")
+# kable_classic(kbl(x=correlation,caption = "Correlations between the proteins of interest"),full_width = F, html_font = "Cambria")
+ 
+ data_melt=melt(correlation)
+
+ggplot(data = data_melt, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()+scale_fill_viridis()+ggtitle("Correlation between the proteins of interest")+ theme(axis.text.x = element_text(angle = 90))+
+  scale_fill_gradient2(low = "dodgerblue3",
+                       mid = "#FFFFF6",
+                       high = "firebrick1") 
+```
+
+There is a negative correlation between SLC17A8 and RUNX3. We can also observe in a heatmap the counts in each of the selected genes, separated according to the cold/diffuse status or oligo/astro: 
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE,fig.cap="heatmap gene expression for the genes of interest, separated with cold/diffuse or astro/oligo"}
+cold_diffuse=table_proteo[,3]
+heatmap_cold=cbind(data_corr,cold_diffuse)
+superheat(heatmap_cold[,-22],membership.rows =heatmap_cold[,22],bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3","#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+
+astro_oligo=table_proteo[,8]
+heatmap_astro=cbind(data_corr,astro_oligo)
+heatmap_astro=heatmap_astro[!is.na(heatmap_astro[,22]),]
+superheat(heatmap_astro[,-22],membership.rows =heatmap_astro[,22],bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+
+```
+
+## Link between proteins and genes
+
+We can look for the expression of the genes for the proteins of interest. In this way, we can see if the gene is also identified in the random forest, and also if it is identified in the link between cold and diffuse, astro and oligo. In the table, the first column correspond to the protein ID, the second column to the associated gene ID, and then the different pvalues and fold change associated with cold/diffuse or astro/oligo for the genes associated. It shows how the genes associated with the identified proteins were linked with cold/diffuse or astro/oligo
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE,fig.cap="heatmap gene expression for the genes of interest, separated with cold/diffuse or astro/oligo"}
+
+proteins_selected=table_tot_proteo[,1]
+proteins_to_RNA <- AnnotationDbi::select(org.Hs.eg.db, keys=proteins_selected, columns=c('UNIPROT', 'SYMBOL', 'ENTREZID'), keytype="UNIPROT")
+genes_interest=proteins_to_RNA[,c(1,2)]
+genes_interest=genes_interest[!is.na(genes_interest[,2]),]
+colnames(genes_interest)=c("protein_ID","gene_ID")
+
+cold_diffuse_comparaison=total_cold_RNA[total_cold_RNA[,1]%in%genes_interest[,2],-7]
+colnames(cold_diffuse_comparaison)=c("gene_ID","pvalue","rank_pvalue","raw_pvalue","log2FoldChange","diffexpressed")
+cold_diffuse_comparaison=merge(genes_interest,cold_diffuse_comparaison,by="gene_ID")
+cold_diffuse_comparaison=cold_diffuse_comparaison[order(cold_diffuse_comparaison[,3],decreasing=FALSE),c(2,1,3,4,5,6,7)]
+
+ kable_classic(kbl(x=cold_diffuse_comparaison[1:15,],caption = "Cold vs Diffuse genes linked with proteins of interest (top 15 proteins in term of cold/diffuse pvalue for the associated gene)"),full_width = F, html_font = "Cambria")
+
+```
+
+```{r,echo=FALSE,message=FALSE,warning=FALSE,cache=TRUE,fig.cap="heatmap gene expression for the genes of interest, separated with cold/diffuse or astro/oligo"}
+
+astro_diffuse_comparaison=total_astro_RNA[total_astro_RNA[,1]%in%genes_interest[,2],-7]
+colnames(astro_diffuse_comparaison)=c("gene_ID","pvalue","rank_pvalue","raw_pvalue","log2FoldChange","diffexpressed")
+astro_diffuse_comparaison=merge(genes_interest,astro_diffuse_comparaison,by="gene_ID")
+astro_diffuse_comparaison=astro_diffuse_comparaison[order(astro_diffuse_comparaison[,3],decreasing=FALSE),c(2,1,3,4,5,6,7)]
+
+
+ 
+  kable_classic(kbl(x=astro_diffuse_comparaison[1:15,],caption = "Astro vs Oligo genes linked with proteins of interest (top 15 proteins in term of astro/oligo pvalue for the associated gene)"),full_width = F, html_font = "Cambria")
+
+
+```
+
+The genes associated with the proteins of interest were not identified by the random forest for the survival. 
+
+We looked in general at the overlap between the different identified groups. Here we used the total found genes and proteins linked with survival, meaning that they were identified at least one time with random forest, as the reduced group (always found) was not linked with any other group. The following Venn diagramm shows the different overlaps: 
+
+![Venn diagramm of interactions between found genes and proteins](data/venn3.png)
+
+
+Inside the RNA analysis we can find: 
+
+* 80 genes in common between RNA astro vs oligo and RNA cold vs diffuse
+* 1 gene between RNA astro vs oligo,  cold vs diffuse and survival: TRIM67
+* 7 genes between RNA survival and cold vs diffuse: "TRIM67" "GAGE10" "VGF"    "VWC2L"  "MMP24"  "ALK"    "RBMXL1"
+
+Inside the Proteomic analysis we can find:
+
+* Proteo survival + proteo cold : 1 protein ("COQ8A")
+
+In the interaction with both, there is no overlap between RNA survival and Proteomic suvival, but we found:
+
+* Proteo in survival + RNA cold vs diffuse : "ITGB5"  "ACADVL" "ACSF2"  "SCP2"   "PTBP2"  "IBA57"
+* RNA in survival + Proteo cold vs diffuse : "COX15"
+
+# Summary 
+
+We have a total of 163 patients with lower grade glioma, we have RNAseq data on 59 patients, proteomics data on 98 patients (minus 2 patients that were discarded as outliers) and imaging data on 158 patients. We have also 5 patients that are "G4", wich might be a different grade of tumor.  
+We are interested in finding the genes and proteins associated with the status cold/diffuse, astro/oligo and the risk of recurrence. 
+
+In the total data, we could see that the status cold/diffuse was associated with survival (significant with a multivariate cox model), as well as with the proteomics data, but not the RNA data. The astro/oligo status was not signiciant. These results were not changed by the absence of G4 patients.
+
+## RNA data
+
+We have a total of 59 patients, with 24 cold patients and 35 diffuse, 24 astro and 35 oligo patients. We looked at the difference of gene expression between cold and diffuse, astro and oligo: 
+
+* Cold vs Diffuse: dearseq found 1212 differentially expressed genes (1978 without G4 patients)
+* Astro vs Oligo: dearseq found 117 differentially expressed genes (119 without G4 patients)
+
+Even if the number of significant genes is not the same, in term of pvalues, the absence or presence of G4 did not change the results a lot.  
+
+
+In term of survival, we performed multiple times the random forest, and selected: 
+
+* The gene SLC17A8, always first in term of importance with the total patients, and also associated with cold/diffuse
+* 16 genes always found in the different random forest trials. 
+
+263 genes were found at least one time by random forest
+
+## Proteomics data
+
+We have a total of 96 patients because the patiens TOR-ROB and BAL-PIE were discarded as they were outliers, with 37 cold patients and 59 diffuse, 37 astro and 56 oligo patients. We looked at the difference of proteins expression between cold and diffuse, astro and oligo: 
+
+* Cold vs Diffuse: dearseq found 14 differentially expressed proteins (222 without G4 patients)
+* Astro vs Oligo: dearseq found no proteins
+
+Even if the number of significant proteins is not the same, in term of pvalues, the absence or presence of G4 did not change the results a lot.  
+
+
+In term of survival, we performed multiple times the random forest, and selected 29 proteins always found, 158 were found at least one time
+
+

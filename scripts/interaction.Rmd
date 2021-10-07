@@ -1,0 +1,874 @@
+---
+title: "Transcan: Interaction between cold/diffuse and astro/oligo"
+author: "Laura Villain, Rodolphe Thiébaut, Thomas Ferte, Boris Hejblum"
+output: 
+  bookdown::html_document2:
+    toc: yes
+    toc_float: true
+    number_sections: FALSE
+    fig_caption: TRUE
+    table_caption: TRUE
+---
+
+ 
+```{r include=FALSE}
+ knitr::opts_chunk$set(cache=TRUE)
+
+```
+ 
+
+```{r setup, include=FALSE, eval=TRUE,message=FALSE,warning=FALSE,cache=FALSE}
+
+
+library(readr)
+library(superheat)
+library(org.Hs.eg.db)
+library(knitr)
+library(readxl)
+library(survival)
+library("survminer")
+library(randomForestSRC)
+library(dearseq)
+library(limma)
+library(xlsx)
+library(GSA)
+library(verification)
+library(dynpred)
+library(pec)
+library(DESeq2)
+library(base)
+library(reshape2)
+library(ggplot2)
+library(stats)
+library(patchwork)
+library(blandr)
+library(kableExtra)
+library(dplyr)
+library(FactoMineR)
+library(scales)
+library(ggrepel)
+library(viridis)
+
+
+```
+
+
+A total of 160 patients with lower grade glioma were followed for this study. Among them, we have RNAseq data on 56 patients, proteomics data on 96 patients and imaging data on 155 patients. The following figure shows the flowchart of the total data with the cold and diffuse patients :
+
+
+![Flowchart of Transcan data](flowchart_complet.png)
+ 
+ 
+# Description of cold/diffuse and astro/oligo
+
+
+```{r,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+
+
+  
+data_total <- read_excel("data/13_Transcan_All_survival.xlsx",sheet = "All_survie")
+data_total=as.data.frame(data_total)
+data_total=data_total[,c(4,5,16,18,10,11,6,8,9,3)]
+data_total=data_total[-1,]
+data_total=data_total[!is.na(data_total[,2]),]
+data_total=data_total[!data_total[,2]=="SPOTS",]
+data_total=data_total[!data_total[,2]=="SPOT",]
+
+colnames(data_total)=c("ID","cold_diffuse","Reccurence","Time","Age","Sexe","oligo_astro","RNA","proteo","ID_proteo")
+data_total=data_total[,c(1,2,3,4,6,5,7,8,9,10)]
+for (i in 1:length(data_total[,1])){
+  
+  if (data_total[i,2]=="diffuse"){
+    data_total[i,2]="DIFFUSE"
+  }
+    if (data_total[i,2]=="cold"){
+    data_total[i,2]="COLD"
+    }
+  if (data_total[i,7]=="."){
+    data_total[i,7]=NA
+  }else{
+    
+  
+  if (data_total[i,7]=="1"){
+    data_total[i,7]="oligo"
+  }
+    if (data_total[i,7]=="0"){
+    data_total[i,7]="astro"
+  }}
+}
+
+data_total=data_total[!duplicated(data_total[,1]),]
+
+
+data_total[,6]=as.numeric(data_total[,6])
+data_total[,3]=as.numeric(data_total[,3])
+data_total[,4]=as.numeric(data_total[,4])/365
+data_total[,2]=as.factor(data_total[,2])
+data_total[,5]=as.factor(data_total[,5])
+data_total[,7]=as.factor(data_total[,7])
+data_total[,8]=as.factor(data_total[,8])
+data_total[,9]=as.factor(data_total[,9])
+
+
+oligo=c(as.data.frame( read_excel("data/Transcan_Liste_Astro_Oligo.xlsx",sheet = "Oligo",col_names = FALSE)))$"...1"
+astro=as.data.frame( read_excel("data/Transcan_Liste_Astro_Oligo.xlsx",sheet = "Astro",col_names = FALSE))
+G4=astro[astro[,2]=="G4",]
+G4=ifelse(data_total[,1]%in%G4[,1],"1","0")
+
+data_total=cbind(data_total,G4)
+
+data_total[,11]=as.factor(data_total[,11])
+data_total_avec=data_total
+data_total_sans=data_total[data_total[,11]=="0",]
+
+cold_oligo=numeric(length(data_total[,1]))
+for (i in 1:length(data_total[,1])){
+  if (!is.na(data_total[i,7])){
+    
+  
+  if (data_total[i,2]=="COLD"&data_total[i,7]=="oligo"){
+    cold_oligo[i]=1
+  }
+    if (data_total[i,2]=="DIFFUSE"&data_total[i,7]=="oligo"){
+    cold_oligo[i]=2
+    }
+    if (data_total[i,2]=="COLD"&data_total[i,7]=="astro"){
+    cold_oligo[i]=3
+    }
+    if (data_total[i,2]=="DIFFUSE"&data_total[i,7]=="astro"){
+    cold_oligo[i]=4
+  }}
+}
+
+new_list_patients=as.data.frame(read_excel("data/new_patient_list.xlsx"))
+data_total=data_total[data_total[,1]%in%new_list_patients[,1],]
+
+```
+
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+data_total=data_total_avec
+Age=c(round(mean(data_total[data_total[,2]=="COLD"&!is.na(data_total[,6]),6]),1),round(mean(data_total[data_total[,2]=="DIFFUSE",6]),1))
+Female=c(table(data_total[data_total[,2]=="COLD",5])[1],table(data_total[data_total[,2]=="DIFFUSE",5])[1])
+Male=c(table(data_total[data_total[,2]=="COLD",5])[2],table(data_total[data_total[,2]=="DIFFUSE",5])[2])
+Event=c(table(data_total[data_total[,2]=="COLD",3])[2],table(data_total[data_total[,2]=="DIFFUSE",3])[2])
+No_event=c(table(data_total[data_total[,2]=="COLD",3])[1],table(data_total[data_total[,2]=="DIFFUSE",3])[1])
+Median_followup=c(round(summary(data_total[data_total[,2]=="COLD",4])[3],1),round(summary(data_total[data_total[,2]=="DIFFUSE",4])[3],1))
+cold_diffuse_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(cold_diffuse_table)=c("Cold (n=67)","Diffuse (n=93)")
+rownames(cold_diffuse_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+```{r, eval=T,echo=FALSE,message=FALSE,warning=FALSE}
+data_total=data_total_avec
+Age=c(round(mean(data_total[data_total[,7]=="oligo"&!is.na(data_total[,6])&!is.na(data_total[,7]),6]),1),round(mean(data_total[data_total[,7]=="astro"&!is.na(data_total[,6])&!is.na(data_total[,7]),6]),1))
+Female=c(table(data_total[data_total[,7]=="oligo",5])[1],table(data_total[data_total[,7]=="astro",5])[1])
+Male=c(table(data_total[data_total[,7]=="oligo",5])[2],table(data_total[data_total[,7]=="astro",5])[2])
+Event=c(table(data_total[data_total[,7]=="oligo",3])[2],table(data_total[data_total[,7]=="astro",3])[2])
+No_event=c(table(data_total[data_total[,7]=="oligo",3])[1],table(data_total[data_total[,7]=="astro",3])[1])
+Median_followup=c(round(summary(data_total[data_total[,7]=="oligo",4])[3],1),round(summary(data_total[data_total[,7]=="astro",4])[3],1))
+oligo_astro_table=rbind(Age,Female,Male,Event,No_event,Median_followup)
+colnames(oligo_astro_table)=c("oligo (n=86)","astro (n=71)")
+rownames(oligo_astro_table)=c("Age (mean)","Female","Male","Event","No event", "Median follow up (years)")
+```
+
+
+
+```{r, echo = FALSE}
+t1=cold_diffuse_table
+t2=oligo_astro_table
+kable(t1,caption = c("Cold vs Diffuse")) %>%
+  kable_styling(full_width = FALSE, position = "float_left")
+kable(t2,caption = c("Oligodendroglioma vs Astrocytoma")) %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+
+
+
+We can look at the link between oligo/astro and cold/diffuse: 
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+data_total=data_total_avec
+Oligo_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="oligo",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="oligo",])[1])
+Astro_test=c(dim(data_total[data_total[,2]=="COLD"&data_total[,7]=="astro",])[1],dim(data_total[data_total[,2]=="DIFFUSE"&data_total[,7]=="astro",])[1])
+table_comparaison=cbind(Oligo_test,Astro_test)
+colnames(table_comparaison)=c("Oligo","Astro")
+rownames(table_comparaison)=c("Cold","Diffuse")
+
+ kable_classic(kbl(x=table_comparaison,caption = "Cold vs Diffuse and Astro vs Oligo"),full_width = F, html_font = "Cambria")
+ 
+
+
+```
+
+The pvalue associated with the interaction is `r round(chisq.test(table_comparaison)[3]$p.value,5)`
+
+# Survival and cold/diffuse astro/oligo
+
+We can look at the Kaplan-Meier curves associated with cold/diffuse and astro/oligo: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves comparison"}
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_total_avec)
+
+
+ p_oa_total=ggsurvplot(fit, data = data_total_avec,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Oligodendroglioma vs Astrocytoma, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+ 
+ 
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_total_avec)
+
+
+p_cd_total= ggsurvplot(fit, data = data_total_avec,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Cold", "Diffuse"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Cold vs Diffuse, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_cd_total
+p_oa_total
+
+
+```
+
+None of the categories are significant. We can also perform Cox models, with an univariate test or adjusted on Age and Sex. Here are the pvalues corresponding: 
+
+
+```{r,echo=F,message=FALSE,warning=FALSE}
+data_total=data_total_avec
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=data_total)
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse,data=data_total)
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_total)
+cd_total_pval=round(c(summary(modele_base)$coefficients[1,5],summary(modele_univarie)$coefficients[5],surv_pvalue(fit,data=data_total,method="1")$pval,surv_pvalue(fit,data=data_total,method="sqrtN")$pval,surv_pvalue(fit,data=data_total,method="S1")$pval,surv_pvalue(fit,data=data_total,method="S2")$pval),3)
+
+modele_base= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse+Sexe+Age+oligo_astro,data=data_total)
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro,data=data_total)
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_total)
+oa_total_pval=round(c(summary(modele_base)$coefficients[4,5],summary(modele_univarie)$coefficients[5],surv_pvalue(fit,data=data_total,method="1")$pval,surv_pvalue(fit,data=data_total,method="sqrtN")$pval,surv_pvalue(fit,data=data_total,method="S1")$pval,surv_pvalue(fit,data=data_total,method="S2")$pval),3)
+
+
+modele_univarie= coxph(formula = Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_total)
+
+
+
+table_pvals=rbind(cd_total_pval,oa_total_pval)
+colnames(table_pvals)=c("Cox multivarié","Cox univarié","Log-rank","Tarone-Ware","Peto-Peto","Modified Peto-Peto")
+rownames(table_pvals)=c("C vs D ","O vs A ")
+
+ kable_classic(kbl(x=table_pvals,caption = "Statistical test"),full_width = F, html_font = "Cambria")
+
+
+```
+# Grade influence 
+
+
+```{r,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
+colnames(new_list_patients)=c("ID","Grade")
+data_grade=merge(data_total,new_list_patients,by="ID")
+data_grade=data_grade[!is.na(data_grade[,12]),]
+
+astro=c(length(data_grade[data_grade[,7]=="astro"&data_grade[,12]==0,1]),length(data_grade[data_grade[,7]=="astro"&data_grade[,12]==1,1]),length(data_grade[data_grade[,7]=="astro"&data_grade[,12]==2,1]),length(data_grade[data_grade[,7]=="astro"&data_grade[,12]==3,1]),length(data_grade[data_grade[,7]=="astro"&data_grade[,12]==4,1]))
+oligo=c(length(data_grade[data_grade[,7]=="oligo"&data_grade[,12]==0,1]),length(data_grade[data_grade[,7]=="oligo"&data_grade[,12]==1,1]),length(data_grade[data_grade[,7]=="oligo"&data_grade[,12]==2,1]),length(data_grade[data_grade[,7]=="oligo"&data_grade[,12]==3,1]),length(data_grade[data_grade[,7]=="oligo"&data_grade[,12]==4,1]))
+table_AO=rbind(astro,oligo)
+colnames(table_AO)=c("Grade0","Grade1","Grade2","Grade3","Grade4")
+ kable_classic(kbl(x=table_AO,caption = "Grades in function of Astro/Oligo status"),full_width = F, html_font = "Cambria")
+ 
+ diffuse=c(length(data_grade[data_grade[,2]=="DIFFUSE"&data_grade[,12]==0,1]),length(data_grade[data_grade[,2]=="DIFFUSE"&data_grade[,12]==1,1]),length(data_grade[data_grade[,2]=="DIFFUSE"&data_grade[,12]==2,1]),length(data_grade[data_grade[,2]=="DIFFUSE"&data_grade[,12]==3,1]),length(data_grade[data_grade[,2]=="DIFFUSE"&data_grade[,12]==4,1]))
+cold=c(length(data_grade[data_grade[,2]=="COLD"&data_grade[,12]==0,1]),length(data_grade[data_grade[,2]=="COLD"&data_grade[,12]==1,1]),length(data_grade[data_grade[,2]=="COLD"&data_grade[,12]==2,1]),length(data_grade[data_grade[,2]=="COLD"&data_grade[,12]==3,1]),length(data_grade[data_grade[,2]=="COLD"&data_grade[,12]==4,1]))
+table_CD=rbind(diffuse,cold)
+colnames(table_CD)=c("Grade0","Grade1","Grade2","Grade3","Grade4")
+ kable_classic(kbl(x=table_CD,caption = "Grades in function of diffuse/cold status"),full_width = F, html_font = "Cambria")
+
+
+
+```
+
+In the Astro/oligo group, the grades 2 and 3 are similar, but there is 5 grade 4 identidied. We already saw that these patients were not different from the other (see G4 patients in total analysis). But in the Cold/Diffuse group, there are more grade 3 in the Diffuse group, and more grade 2 in the Cold group, which could infuence the oberved survival.
+We can see if the grade influence the survival probability, first by looking at the Kaplain Meier curves: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with the grades"}
+ data_grade_reduces=data_grade[data_grade[,12]%in%c(2,3),]
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ Grade, data = data_grade_reduces)
+
+
+p_cd_total= ggsurvplot(fit, data = data_grade_reduces,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            #legend.labs = c("Cold", "Diffuse"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#91a4e0", "#9e1f61"),
+            
+            title="Survival in function of the Grades 2 and 3",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_cd_total
+
+
+```
+
+There seems to be no differencies of survival between the grades 2 and 3. 
+
+We can look at the curves of cold vs diffuse, separated in grade 2 and 3:
+
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with the grades"}
+
+ data_grade2=data_grade[data_grade[,12]==2,]
+ data_grade3=data_grade[data_grade[,12]==3,]
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_grade2)
+
+
+p_cd_grade2= ggsurvplot(fit, data = data_grade2,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Cold", "Diffuse"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Cold vs Diffuse, Grade 2",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+
+
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse, data = data_grade3)
+
+
+p_cd_grade3= ggsurvplot(fit, data = data_grade3,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Cold", "Diffuse"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Cold vs Diffuse, Grade 3",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_cd_grade2$plot+p_cd_grade3$plot
+
+
+```
+
+There seems to be more difference with the grade 3, but in this grade there is only 17 Cold patients, which might be more difficult to interpret. 
+
+We look at the same curves but with astro and oligo: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with the grades"}
+
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_grade2)
+
+
+p_cd_grade2= ggsurvplot(fit, data = data_grade2,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Astro vs Oligo, Grade 2",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+
+
+ fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ oligo_astro, data = data_grade3)
+
+
+p_cd_grade3= ggsurvplot(fit, data = data_grade3,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Astro vs Oligo, Grade 3",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_cd_grade2$plot+p_cd_grade3$plot
+
+
+```
+
+Again, the two curves are similar. 
+
+
+Now, we can look at cox models to see the impact of the grade. First by looking at the grade with an univariate model: 
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_grade=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ Grade,data=data_grade)
+summary(modele_grade)
+```
+
+In an univariate model, the grade is not significant. We can adjust on cold/diffuse and astro/oligo: 
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_grade=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ Grade+cold_diffuse,data=data_grade)
+summary(modele_grade)
+```
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_grade=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ Grade+oligo_astro,data=data_grade)
+summary(modele_grade)
+```
+
+In these two cases, the grade is not significant, and so are the cold/diffuse astro/oligo status.
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_grade=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~Age+ Sexe +cold_diffuse+ Grade+oligo_astro,data=data_grade)
+summary(modele_grade)
+```
+
+In all cases, the grade is not significant, but the status cold/diffuse is still significant.
+
+# Comparison with tcga and rembrandt
+The Cancer Genome Atlas has data from 408 patients, 200 Astrocytoma and 208 Oligodendroglioma. We can look at the Kaplan Meier curves: 
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves for TCGA data"}
+datas_tcga=read.table("data/datas_tcga_rf.txt",header = TRUE)
+datas_tcga[,1]=factor(ifelse(datas_tcga[,1]==1,"Astrocytoma","Oligodendroglioma"))
+fit <- survfit(Surv(time=as.numeric(time/12), event=as.numeric(event)) ~ histological_type, data = datas_tcga)
+
+
+ p_oa_total=ggsurvplot(fit, data = datas_tcga,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Oligodendroglioma vs Astrocytoma, TCGA patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+ p_oa_total
+ 
+ 
+ data1<-as.data.frame( read_tsv(file = "data/tcga_idh1.tsv"))
+
+```
+
+The difference between the two categories is stronger there, with a pvalue=0.002. 
+
+We can look at another database: Rembrandt database, with 154 patients (108 astro and 46 oligo)
+
+
+```{r,eval=T,echo=F,message=FALSE,warning=FALSE,cache=FALSE, fig.cap="Kaplan Meier curves for Rembrandt data"}
+datas_rembrandt=read.table("data/clinical_rembrandt.txt",header=TRUE)
+datas_rembrandt=datas_rembrandt[datas_rembrandt[,6]%in%c("OLIGO","ASTRO"),]
+fit <- survfit(Surv(time=as.numeric(OVERALL_SURVIVAL_MONTHS), event=as.numeric(EVENT_OS)) ~ DISEASE_TYPE, data = datas_rembrandt)
+
+
+ p_oa_total=ggsurvplot(fit, data = datas_rembrandt,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Oligodendroglioma vs Astrocytoma, Rembrandt patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+ p_oa_total
+```
+This time, the pvalue is not significant. It means that depending on the study we might not have a strong difference between the two categories. Howerver, it might also be due to the higher number of patients in TCGA, when all patients are taken into account. 
+```{r,echo=F,message=FALSE,warning=FALSE}
+modele_base= coxph(Surv(time=as.numeric(OVERALL_SURVIVAL_MONTHS), event=as.numeric(EVENT_OS)) ~ DISEASE_TYPE, data = datas_rembrandt)
+fit <- survfit(Surv(time=as.numeric(OVERALL_SURVIVAL_MONTHS), event=as.numeric(EVENT_OS)) ~ DISEASE_TYPE, data = datas_rembrandt)
+rembrandt_pval=round(c(summary(modele_base)$coefficients[5],surv_pvalue(fit,data=datas_rembrandt,method="1")$pval,surv_pvalue(fit,data=datas_rembrandt,method="sqrtN")$pval,surv_pvalue(fit,data=datas_rembrandt,method="S1")$pval,surv_pvalue(fit,data=datas_rembrandt,method="S2")$pval),3)
+
+modele_base= coxph(Surv(time=as.numeric(time/12), event=as.numeric(event)) ~ histological_type, data = datas_tcga)
+fit <- survfit(Surv(time=as.numeric(time/12), event=as.numeric(event)) ~ histological_type, data = datas_tcga)
+tcga_pval=round(c(summary(modele_base)$coefficients[5],surv_pvalue(fit,data=datas_tcga,method="1")$pval,surv_pvalue(fit,data=datas_tcga,method="sqrtN")$pval,surv_pvalue(fit,data=datas_tcga,method="S1")$pval,surv_pvalue(fit,data=datas_tcga,method="S2")$pval),3)
+
+
+
+table_pvals=rbind(tcga_pval,rembrandt_pval)
+colnames(table_pvals)=c("Cox univarié","Log-rank","Tarone-Ware","Peto-Peto","Modified Peto-Peto")
+rownames(table_pvals)=c("TCGA ","Rembrandt ")
+
+ kable_classic(kbl(x=table_pvals,caption = "Statistical test for Astro vs Oligo"),full_width = F, html_font = "Cambria")
+
+
+```
+However, the data from TCGA includes all patients, even the one that are not IDH1 mutated, which can influance the survival. This mutation was measured on only 93 patients, with only 62 being mutated. On the patients with measures on this mutation, 60% of the astro were mutated and 84% of oligo were mutated. Here is the same analysis with only the IDH1 mutated:
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves for TCGA data IDH1 mutated"}
+datas_tcga=read.table("tcga_idh1.txt",header = TRUE)
+datas_tcga[,1]=factor(ifelse(datas_tcga[,1]==1,"Astrocytoma","Oligodendroglioma"))
+fit <- survfit(Surv(time=as.numeric(time/12), event=as.numeric(event)) ~ histological_type, data = datas_tcga)
+
+
+ p_oa_total=ggsurvplot(fit, data = datas_tcga,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "",
+            legend.labs = c("Astrocytoma", "Oligodendroglioma"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            #palette = c("#E7B800", "#2E9FDF"),
+            
+            title="Oligodendroglioma vs Astrocytoma, TCGA patients IDH1 mutated",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+ p_oa_total
+ 
+ 
+ data1<-as.data.frame( read_tsv(file = "data/tcga_idh1.tsv"))
+
+```
+This time the difference is not significant, but only 4 patients in Astrocytoma had an event, which makes it almost impossible to interpret. 
+
+# Interaction between the two categories
+
+We can be interested to look at the interaction between Astro/Oligo and Cold/Diffuse. We separated the patients into 4 categories: cold and oligo, cold and astro, diffuse and oligo, diffuse and astro. Here are the Kaplan Meier curves:
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with the 4 categories"}
+
+data_test=cbind(data_total,cold_oligo)
+data_test=merge(data_test,new_list_patients,by="ID")
+data_test=data_test[data_test[,12]!=0,]
+data_test[,12]=factor(data_test[,12])
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo, data = data_test)
+
+
+p_interaction= ggsurvplot(fit, data = data_test,
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "Interaction",
+            legend.labs = c("Cold and oligo","Diffuse and oligo","Cold and astro","Diffuse and astro"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#b1c200", "#ff7905","#d70043","#7c0088"),
+            
+            title="Interactions, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_interaction
+modele_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro,data=data_test)
+modele_total_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro+Sexe+Age,data=data_test)
+modele_reduces_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_test)
+```
+
+We can see that the categories cold+oligo and diffuse+astro are stongly different. Here are the two categories represented: 
+
+```{r,echo=F,message=FALSE,warning=FALSE, fig.cap="Kaplan Meier curves with two categories"}
+fit <- survfit(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo, data = data_test[data_test[,12]%in%c(1,4),])
+
+
+p_interaction_limited= ggsurvplot(fit, data = data_test[data_test[,12]%in%c(1,4),],
+            surv.median.line = "hv", # Add medians survival
+            
+            # Change legends: title & labels
+            legend.title = "Interaction",
+            legend.labs = c("Cold and oligo","Diffuse and astro"),
+            
+            conf.int = TRUE,
+            # Add risk table
+            risk.table = TRUE,pval=TRUE,
+            tables.height = 0.2,
+            tables.theme = theme_cleantable(),
+            
+            # Color palettes. Use custom color: c("#E7B800", "#2E9FDF"),
+            # or brewer color (e.g.: "Dark2"), or ggsci color (e.g.: "jco")
+            palette = c("#b1c200", "#7c0088"),
+            
+            title="Interactions, Total patients",
+            ggtheme = theme_bw() # Change ggplot2 theme
+ )
+p_interaction_limited
+
+
+```
+The log-rank test shows that the difference is significant.
+
+
+We can wonder if the difference observed is linked with an interaction with cold/diffuse and oligo/astro, or simply a cumulative effect. We can perform a cox model with interaction, but also a cox model with the four categories:
+
+```{r, message=FALSE,warning=FALSE}
+modele_interaction=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_diffuse*oligo_astro,data=data_test)
+summary(modele_interaction)
+
+```
+
+Here with the model with interaction, there seem to be no interaction between the two categories in term of survival. 
+```{r, message=FALSE,warning=FALSE}
+modele_categorie=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ cold_oligo,data=data_test)
+summary(modele_categorie)
+```
+
+In the model with categories, there is a significant pvalue between the categorie cold+oligo and the categorie diffuse+astro, as seen on the Kaplan Meier curves. We can also look at the same model asjusted on the Age and Sex: 
+
+```{r, message=FALSE,warning=FALSE}
+
+modele_categorie=coxph(Surv(time=as.numeric(Time), event=as.numeric(Reccurence)) ~ Grade+ Age+Sexe+cold_oligo,data=data_test)
+summary(modele_categorie)
+```
+
+The difference between the categories cold+oligo and diffuse+astro are still significant
+
+
+# RNAseq data 
+We can now look at the link between the two categories in term of expression. 
+We have gene expression data (RNAseq) for 59 patients, 4 patients being G4. The following figure presents the boxplot of the normalized counts per patients (normalization log CPM). All data have been normalized according to the log CPM, a transformation that allows us to compare the samples, by make less important the biological variations between them. The log2 transformation means that when the counts after normalization increase of one units, the raw counts have doubled. 
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE}
+
+counts=read.table("data/counts_final.txt")
+
+
+datas=data_test[data_test[,8]==1,-c(8,9)]
+names=datas[,1]
+names_table_split=strsplit(as.character(names),split="_")
+names_table=numeric(length(datas[,1]))
+for (i in 1:length(names_table)){
+  names_table[i]=names_table_split[[i]][1]
+}
+datas[,1]=names_table
+datas=datas[!duplicated(datas[,1]),]
+
+
+counts=counts[rownames(counts)%in%datas[,1],]
+liste_vide=c()
+liste_variance_nulle=c()
+for (i in 1:length(counts[1,])){
+  if (sum(as.vector(counts[,i])==rep(0,length(counts[,1])))==length(counts[,1])){
+    liste_vide=c(liste_vide,i)
+  }
+  if (sd(counts[,i])==0){
+    liste_variance_nulle=c(liste_variance_nulle,i)
+  }
+}
+
+counts=counts[,-liste_vide]
+norm_counts <- apply(counts, MARGIN = 2, function(v) {
+  log2((v + 0.5)/(sum(v) + 1) * 10^6)
+})
+norm_counts <- as.data.frame(norm_counts)
+raw_counts=counts
+counts=norm_counts
+
+rownames(datas)=datas[,1]
+datas=datas[rownames(counts),]
+
+datas_avec=datas
+
+
+output_cold_oligo=datas[,10]
+output_cold_oligo=as.numeric(as.character(output_cold_oligo))
+datas=datas[,-10]
+```
+
+dearseq identified 1212 genes differentially expressed between cold and diffuse, and 117 differentially expressed betwen oligodendroglioma and astrocytoma. Among those genes, 80 were in common. We can observe the link in term of fold change for these genes 
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_OA=read.xlsx("dearseq_RNA_O_A_wg4.xlsx",sheetIndex  =1)
+genes_CD=read.xlsx("dearseq_RNA_C_D_wg4.xlsx",sheetIndex  =1)
+comparaison=merge(genes_OA,genes_CD,by="ID")
+data_compare=comparaison[,c(5,9)]
+data_compare=data_compare[order(data_compare[,1]),]
+colnames(data_compare)=c("log2Foldchange_OA","log2Foldchange_CD")
+ggplot(data = data_compare,aes(x=log2Foldchange_CD,y=log2Foldchange_OA))+geom_point()+ggtitle("Comparison of fold changes between cold/diffuse \n and oligodendroglioma/astrocytoma")+geom_abline(slope=1)
+```
+
+
+
+
+
+
+
+As we can seen, the fold changes of the genes are extremely similar, but we took diffuse and oligo as references (if the fold change is positive then it is more expressed for the diffuse patients, or oligo patients for the AO fold change). However, as most of the patients being diffuse are also oligo, it seems normal to have correlated fold changes, as the patients in the two categories are similar.
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_comparison=counts[,colnames(counts)%in%c(comparaison[,1])]
+for (i in 1:length(output_cold_oligo)){
+  if (output_cold_oligo[i]==1){
+    output_cold_oligo[i]="cold_oligo"
+  }
+    if (output_cold_oligo[i]==2){
+    output_cold_oligo[i]="diffuse_oligo"
+    }
+    if (output_cold_oligo[i]==3){
+    output_cold_oligo[i]="cold_astro"
+    }
+    if (output_cold_oligo[i]==4){
+    output_cold_oligo[i]="diffuse_astro"
+  }
+}
+output_cold_oligo=factor(output_cold_oligo,levels=c("cold_oligo","cold_astro","diffuse_oligo","diffuse_astro"))
+superheat(genes_comparison,membership.rows =output_cold_oligo,bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+```
+
+
+When looking at the differencies between cold+oligo and diffuse+astro, we identifies 57 genes. Here are the fold change on these genes
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_OC=read.table("table_dearseq_cold_oligo.txt",header=TRUE)
+counts_genes=counts[,colnames(counts)%in%genes_OC[,1]]
+
+output=ifelse(datas[,2]=="COLD",0,1)
+patients_cold=counts[output==0,]
+patients_diffuse=counts[output==1,]
+means_diffuse=numeric(length(patients_cold[1,]))
+means_cold=numeric(length(patients_cold[1,]))
+for (i in 1:length(patients_cold[1,])){
+  means_diffuse[i]=mean(patients_diffuse[,i])
+  means_cold[i]=mean(patients_cold[,i])
+}
+
+fold_change=data.frame(colnames(patients_cold),means_diffuse-means_cold)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_cold=merge(genes_OC,fold_change,by="ID")
+
+output_oligo=ifelse(datas[,7]=="oligo",0,1)
+patients_oligo=counts[output_oligo==0,]
+patients_astro=counts[output_oligo==1,]
+means_oligo=numeric(length(patients_oligo[1,]))
+means_astro=numeric(length(patients_astro[1,]))
+for (i in 1:length(patients_oligo[1,])){
+  means_oligo[i]=mean(patients_oligo[,i])
+  means_astro[i]=mean(patients_astro[,i])
+}
+
+fold_change=data.frame(colnames(patients_astro),means_oligo-means_astro)
+colnames(fold_change)=c("ID","log2FoldChange")
+total_astro=merge(genes_OC,fold_change,by="ID")
+
+comparaison=merge(total_cold,total_astro,by="ID")
+data_compare=comparaison[,c(3,5)]
+data_compare=data_compare[order(data_compare[,1]),]
+colnames(data_compare)=c("log2Foldchange_OA","log2Foldchange_CD")
+ggplot(data = data_compare,aes(x=log2Foldchange_CD,y=log2Foldchange_OA))+geom_point()+ggtitle("Comparison of fold changes between cold/diffuse \n and oligodendroglioma/astrocytoma")+geom_abline(slope=1)
+```
+
+
+
+
+
+
+
+As we can seen, the fold changes of the genes are extremely similar, but we took diffuse and oligo as references (if the fold change is positive then it is more expressed for the diffuse patients, or oligo patients for the AO fold change). However, as most of the patients being diffuse are also oligo, it seems normal to have correlated fold changes, as the patients in the two categories are similar.
+
+```{r, eval=T,echo=FALSE, message=FALSE,warning=FALSE, fig.cap="Link beween cold/diffuse and oligo/astro in term of fold change"}
+genes_comparison=counts[,colnames(counts)%in%c(comparaison[,1])]
+superheat(genes_comparison,membership.rows =output_cold_oligo,bottom.label.text.angle = 90,heat.pal = c( "dodgerblue3", "#FFFFF6","firebrick1"),bottom.label.text.size = 3.2,bottom.label.size = 0.4)
+```
+
+
