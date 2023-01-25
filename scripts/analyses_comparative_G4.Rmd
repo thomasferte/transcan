@@ -12,8 +12,8 @@ output:
 
  
 ```{r include=FALSE}
- knitr::opts_chunk$set(cache=TRUE)
-
+knitr::opts_chunk$set(cache=TRUE)
+knitr::opts_knit$set(root.dir = '../')
 ```
  
 
@@ -22,11 +22,11 @@ output:
 library(knitr)
 library(readxl)
 library(survival)
-library("survminer")
+library(survminer)
 library(randomForestSRC)
 library(dearseq)
 library(limma)
-# library(xlsx)
+library(xlsx)
 library(GSA)
 library(verification)
 library(dynpred)
@@ -52,13 +52,13 @@ The Glioma are the most common primary brain tumors, among them are the Lower Gr
 
 # Transcan data
 A total of 163 patients with lower grade glioma were followed for this study. Among them, we have RNAseq data on 56 patients, proteomics data on 98 patients and imaging data on 158 patients. The following figure shows the flowchart of the total data with the cold and diffuse patients :
-![Flowchart of Transcan data](data/Transcan_DiffCold_FlowChart.png)
-![Flowchart of Transcan data](data/Transcan_AstroOligo_FlowChart.png)
+
+<!-- ![Flowchart of Transcan data](data/Transcan_DiffCold_FlowChart.png) -->
+<!-- ![Flowchart of Transcan data](data/Transcan_AstroOligo_FlowChart.png) -->
+<!-- issue : flowchart pictures not found -->
+
 However, 5 patients identified as GBM-IDH1 mutated could change the results, with 4 patients with RNA measures and 4 patients with proteomics measures. All of them were characterized as "astro", but 2 were "cold", 3 "diffuse". For that, we compare the different results, with or without them 
 ```{r,echo=F,message=FALSE,warning=FALSE,cache=FALSE}
-
-
-  
 data_total <- read_excel("data/13_Transcan_All_survival.xlsx",sheet = "All_survie")
 data_total=as.data.frame(data_total)
 data_total=data_total[,c(4,5,16,18,10,11,6,8,9,3)]
